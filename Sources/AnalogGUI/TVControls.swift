@@ -1,36 +1,112 @@
 import SwiftUI
 import AnalogCore
 
+struct TVParameterGroupStyle: GroupBoxStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading,spacing: 8) {
+            configuration.label.font(.system(size: 11,weight: .medium))
+            configuration.content.frame(maxWidth: .infinity,alignment: .leading)
+        }.padding(10).background(Rectangle().stroke(.black.opacity(0.12),lineWidth: 1))
+    }
+}
+
+struct TVSignalPanel<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+    var body: some View {
+        VStack(alignment: .leading,spacing: 12) {
+            Text(L(title)).font(.system(size: 12,weight: .semibold))
+            content
+        }.padding(14).foregroundStyle(.black)
+            .background(Rectangle().fill(.white).shadow(color: .black.opacity(0.35),radius: 5,y: 2))
+            .environment(\.colorScheme,.light).groupBoxStyle(TVParameterGroupStyle()).tint(EditingTool.tv.logoAccentColor)
+    }
+}
+
 struct TVControls: View {
-    @ObservedObject var model: PreviewModel
-    private var defaults: TerrestrialSettings { TerrestrialSettings(system: model.terrestrialSystem) }
+    @ObservedObject var model: TVControlState
+    init(model: PreviewModel) { model.tvControlState.bind(model); self.model = model.tvControlState }
+    init(state: TVControlState) { self.model = state }
+    var body: some View {
+        TVBroadcastStandardSwitch(selection: $model.tvStandard)
+            .disabled(model.busy)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct TVBroadcastStandardSwitch: View {
+    @Binding var selection: TVStandard
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                GroupBox(L("Broadcast standard")) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Picker(L("Broadcast standard"), selection: $model.tvStandard) {
-                            Text("PAL-D/K").tag(TVStandard.pal)
-                            Text("NTSC-M").tag(TVStandard.ntsc)
+        GeometryReader { geometry in
+            let width = geometry.size.width / 2
+            ZStack(alignment: .leading) {
+                Rectangle().fill(.white)
+                    .shadow(color: .black.opacity(0.35), radius: 5, y: 2)
+                Rectangle().fill(EditingTool.tv.logoAccentColor)
+                    .frame(width: width, height: 48)
+                    .shadow(color: .black.opacity(0.35), radius: 5, y: 2)
+                    .offset(x: selection == .pal ? 0 : width)
+                    .animation(reduceMotion ? nil : .timingCurve(0.22, 0.75, 0.25, 1, duration: 0.38), value: selection)
+                HStack(spacing: 0) {
+                    ForEach(TVStandard.allCases, id: \.self) { standard in
+                        Button {
+                            if selection != standard { selection = standard }
+                        } label: {
+                            Text(standard == .pal ? "PAL-D/K" : "NTSC-M")
+                                .font(.system(size: 13, weight: .medium))
+                                .frame(width: width, height: 48)
                         }
-                        .pickerStyle(.segmented).labelsHidden()
-                        .accessibilityLabel(L("Broadcast standard"))
-                        .frame(maxWidth: .infinity)
-                        Text(model.tvStandard == .pal ? "625 / 50 · 8 MHz" : "525 / 59.94 · 6 MHz")
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        Text(L("VSB vision · complex RF envelope"))
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
+                        .buttonStyle(ToolModeButtonStyle())
+                        .help(info(for: standard))
+                        .accessibilityHint(info(for: standard))
+                        .accessibilityAddTraits(selection == standard ? .isSelected : [])
+                    }
                 }
-                GroupBox(L("RF channel")) {
+            }
+        }
+        .frame(height: 48)
+        .opacity(isEnabled ? 1 : 0.4)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L("Broadcast standard"))
+    }
+
+    private func info(for standard: TVStandard) -> String {
+        let timing = standard == .pal ? "625 / 50 · 8 MHz" : "525 / 59.94 · 6 MHz"
+        let sound = standard == .pal ? "FM +6.5 MHz · ±50 kHz · 50 μs" : "FM +4.5 MHz · ±25 kHz · 75 μs"
+        return "\(timing)\n\(L("VSB vision + mono FM sound"))\n\(sound)"
+    }
+}
+
+struct TVPathControls: View {
+    @ObservedObject var model: TVControlState
+    init(model: PreviewModel) { model.tvControlState.bind(model); self.model = model.tvControlState }
+    init(state: TVControlState) { self.model = state }
+    private var defaults: TerrestrialSettings { TerrestrialSettings(system: model.terrestrialSystem) }
+    var body: some View {
+        GroupBox(L("Propagation details")) {
+                    VStack(spacing: 10) {
+                        ParameterSlider(name: L("Ground reflection"),value: $model.tvChannel.propagation.groundReflection,
+                            defaultValue: 0,range: 0...0.8,percent: true)
+                        if model.tvChannel.propagation.ridgeEnabled {
+                            ParameterSlider(name: L("Ridge height · m"),value: $model.tvChannel.propagation.ridgeHeightM,defaultValue: 65,range: 0...500)
+                            ParameterSlider(name: L("Ridge position"),value: $model.tvChannel.propagation.ridgePosition,defaultValue: 0.5,range: 0.1...0.9,percent: true)
+                        }
+                    }.padding(.top,6)
+                }
+    }
+}
+
+struct TVRFControls: View {
+    @ObservedObject var model: TVControlState
+    init(model: PreviewModel) { model.tvControlState.bind(model); self.model = model.tvControlState }
+    init(state: TVControlState) { self.model = state }
+    private var defaults: TerrestrialSettings { TerrestrialSettings(system: model.terrestrialSystem) }
+    var body: some View {
+        GroupBox(L("RF channel")) {
                     VStack(spacing: 12) {
-                        ParameterSlider(name: L("Signal level · dB"), value: $model.tvChannel.signalDB,
-                            defaultValue: defaults.signalDB, range: -60...12)
-                        ParameterSlider(name: L("Reference C/N · dB"), value: $model.tvChannel.carrierToNoiseDB,
-                            defaultValue: defaults.carrierToNoiseDB, range: 5...60)
-                        Text(L("C/N is referenced to the signal at 0 dB. Lower signal levels also reduce reception quality."))
-                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         ParameterSlider(name: L("Echo amplitude"), value: $model.tvChannel.echoGain,
                             defaultValue: defaults.echoGain, range: 0...0.9, percent: true)
                         ParameterSlider(name: L("Echo delay · μs"), value: $model.tvChannel.echoDelayMicroseconds,
@@ -38,8 +114,17 @@ struct TVControls: View {
                         ParameterSlider(name: L("Echo phase · °"), value: $model.tvChannel.echoPhaseDegrees,
                             defaultValue: defaults.echoPhaseDegrees, range: -180...180)
                     }.padding(.top, 6)
-                }.disabled(model.tvDuration <= 0)
-                GroupBox(L("Tuner / receiver")) {
+                }
+    }
+}
+
+struct TVTunerControls: View {
+    @ObservedObject var model: TVControlState
+    init(model: PreviewModel) { model.tvControlState.bind(model); self.model = model.tvControlState }
+    init(state: TVControlState) { self.model = state }
+    private var defaults: TerrestrialSettings { TerrestrialSettings(system: model.terrestrialSystem) }
+    var body: some View {
+        GroupBox(L("Tuner / receiver")) {
                     VStack(alignment: .leading, spacing: 12) {
                         ParameterSlider(name: L("Tuning offset · kHz"), value: $model.tvChannel.tuningOffsetKHz,
                             defaultValue: defaults.tuningOffsetKHz, range: -1500...1500)
@@ -51,27 +136,13 @@ struct TVControls: View {
                             ParameterSlider(name: L("Receiver gain · dB"), value: $model.tvChannel.manualGainDB,
                                 defaultValue: defaults.manualGainDB, range: -12...60)
                         }
-                        Button(L("Reset reception")) { model.tvChannel = defaults }
-                    }.padding(.top, 6)
-                }.disabled(model.tvDuration <= 0)
-                GroupBox(L("Reception")) {
-                    VStack(spacing: 8) {
-                        metric(L("Receiver lock"), model.tvDuration > 0 ? model.tvLockDescription : "—")
-                        metric("AGC", String(format: "%+.1f dB", model.tvAGCDB))
-                        metric(L("Carrier error"), String(format: "%+.0f Hz", model.tvCarrierErrorHz))
-                        metric(L("Sync confidence"), String(format: "%.0f%%", model.tvSyncConfidence*100))
-                        metric(L("Recovered lines"), "\(model.tvRecoveredLines) / \(model.tvStandard.height)")
+                        Button(L("Reset reception")) {
+                            var reset = defaults
+                            reset.propagation = model.tvChannel.propagation
+                            reset.transmitter = model.tvChannel.transmitter
+                            model.tvChannel = reset
+                        }
                     }.padding(.top, 6)
                 }
-                Text(L("Video passes through VSB modulation, RF multipath and noise, tuning, AGC and sync recovery. Audio is the original soundtrack."))
-                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading).padding(.trailing, 8)
-        }
-    }
-
-    private func metric(_ label: String, _ value: String) -> some View {
-        HStack { Text(label).foregroundStyle(.secondary); Spacer(); Text(value).monospacedDigit() }
-            .font(.caption)
     }
 }

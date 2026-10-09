@@ -5,6 +5,9 @@ public enum TVStandard: String, CaseIterable, Codable, Sendable {
     case pal, ntsc
     public var width: Int { 720 }
     public var height: Int { self == .pal ? 576 : 480 }
+    public var displayAspectRatio: Double { 4.0/3.0 }
+    public var squarePixelWidth: Int { height*4/3 }
+    public var pixelAspect: String { self == .pal ? "16/15" : "8/9" }
     public var totalLines: Int { self == .pal ? 625 : 525 }
     public var subcarrierHz: Double { self == .pal ? 4_433_618.75 : 3_579_545.4545454546 }
     public var sampleRate: Double { 4 * subcarrierHz }
@@ -90,10 +93,16 @@ public struct TVChannelSettings: Codable, Sendable {
     public var seed: UInt64 = 42
     public init() {}
 }
-public struct TVDecoderSettings: Codable, Sendable {
+public struct TVDecoderSettings: Codable, Equatable, Sendable {
     public var separation: TVSeparation = .notch
     public var palDelayLine = true
+    public var combFailure: Float = 0
+    public var chromaLeakage: Float = 0
     public init() {}
+    func validate() throws {
+        guard combFailure.isFinite, (0...1).contains(combFailure),
+              chromaLeakage.isFinite, (0...1).contains(chromaLeakage) else { throw TVError.invalidSettings }
+    }
 }
 public struct TVDecodeResult: Sendable {
     public let frame: TVFrame

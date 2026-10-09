@@ -7,7 +7,8 @@ APP="build/AnaLine.app/Contents"
 BUILD_ID=$(printf '%X' "$(date +%s)")
 BUILD_TIME=$(date '+%Y-%m-%d %H:%M:%S %z')
 mkdir -p "$APP/MacOS" "$APP/Resources"
-cp "$BIN_DIR/AnaLine" "$APP/MacOS/AnaLine"
+cp "$BIN_DIR/AnaLine" "$APP/MacOS/AnaLine.next"
+mv -f "$APP/MacOS/AnaLine.next" "$APP/MacOS/AnaLine"
 sed -e "s/__BUILD_ID__/$BUILD_ID/g" -e "s/__BUILD_TIME__/$BUILD_TIME/g" Scripts/Info.plist > "$APP/Info.plist"
 # The local sample is excluded from version control.
 if [ -f Assets/bliss.jpg ]; then

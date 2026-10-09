@@ -1,0 +1,73 @@
+{
+  "stage": "Transmit power before PA, shared vision/sound drive, removed Signal level and Reference C/N controls",
+  "transmit_power_db": 3,
+  "passed": true,
+  "measurements": [
+    {
+      "injected_stalls": false,
+      "maximum_delivery_overhead_ms": 0.04608300000000232,
+      "maximum_presentation_gap_ms": 50.35525,
+      "maximum_presentation_lateness_ms": 9.20833333334059,
+      "maximum_production_ms": 39.363292,
+      "maximum_render_ms": 39.34550000000001,
+      "media_speed": 1.0000656273514588,
+      "playback_rate": 1,
+      "presented_frames": 764,
+      "produced_frames": 766,
+      "production_deadline_misses": 0,
+      "skipped_frames": 0,
+      "system": "PAL-D/K",
+      "underrun_samples": 0,
+      "visible_window": true,
+      "wall_seconds": 30.003364292,
+      "worst_frame_source_encode_rf_image_ms": [
+        1.43875,
+        5.140209,
+        31.610916000000003,
+        1.155625
+      ],
+      "worst_frame_vsb_pa_channel_tuner_carrier_sync_decode_sound_ms": [
+        6.447083,
+        6.403917,
+        1.9577499999999999,
+        8.617167,
+        1.733916,
+        5.504834,
+        0.9339580000000001
+      ]
+    },
+    {
+      "injected_stalls": false,
+      "maximum_delivery_overhead_ms": 0.05016499999999785,
+      "maximum_presentation_gap_ms": 45.262167,
+      "maximum_presentation_lateness_ms": 10.641666666671767,
+      "maximum_production_ms": 21.135167,
+      "maximum_render_ms": 21.117583000000003,
+      "media_speed": 0.9997461859595264,
+      "playback_rate": 1,
+      "presented_frames": 916,
+      "produced_frames": 919,
+      "production_deadline_misses": 0,
+      "skipped_frames": 0,
+      "system": "NTSC-M",
+      "underrun_samples": 0,
+      "visible_window": true,
+      "wall_seconds": 30.002281667,
+      "worst_frame_source_encode_rf_image_ms": [
+        0.844542,
+        1.688291,
+        17.587041000000003,
+        0.9977090000000001
+      ],
+      "worst_frame_vsb_pa_channel_tuner_carrier_sync_decode_sound_ms": [
+        2.434791,
+        2.740709,
+        1.6377080000000002,
+        6.149959,
+        1.113583,
+        2.692125,
+        0.8015
+      ]
+    }
+  ]
+}

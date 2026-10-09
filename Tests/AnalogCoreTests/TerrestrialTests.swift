@@ -34,6 +34,9 @@ final class TerrestrialTests: XCTestCase {
             for index: Int64 in [0,1,2] {
                 let result = try engine.process(TVEngine.encode(source, frameIndex: index), settings: settings)
                 XCTAssertEqual(result.lock, .locked)
+                XCTAssertEqual(result.synchronization.horizontal,.locked)
+                XCTAssertEqual(result.synchronization.vertical,.locked)
+                XCTAssertEqual(result.synchronization.color,.locked)
                 XCTAssertGreaterThan(result.recoveredLines, system.video.height*95/100)
                 XCTAssertGreaterThan(result.colorLockedLines, system.video.height*95/100)
                 for row in [system.video.height/4,system.video.height/4+1] {
@@ -75,11 +78,58 @@ final class TerrestrialTests: XCTestCase {
                 XCTAssertNotEqual(lost.lock,.locked)
                 XCTAssertEqual(lost.frame.rgb.count,source.rgb.count)
                 if index == 4 { XCTAssertEqual(lost.lock,.searching) }
+                let expected: TelevisionLock = index <= 3 ? .holding : .searching
+                XCTAssertEqual(lost.synchronization.horizontal,expected)
+                XCTAssertEqual(lost.synchronization.vertical,expected)
+                XCTAssertEqual(lost.synchronization.color,expected)
             }
             settings = TerrestrialSettings(system: system)
             var recovered: TerrestrialReception!
             for index: Int64 in 5...7 { recovered = try engine.process(TVEngine.encode(source,frameIndex: index),settings: settings) }
             XCTAssertEqual(recovered.lock,.locked)
+            XCTAssertEqual(recovered.synchronization.horizontal,.locked)
+            XCTAssertEqual(recovered.synchronization.vertical,.locked)
+            XCTAssertEqual(recovered.synchronization.color,.locked)
+        }
+    }
+
+    func testColorSyncCanBeLostWhileHorizontalAndVerticalRemainLocked() throws {
+        for system in TerrestrialSystem.allCases {
+            var engine = TerrestrialEngine(system: system)
+            var settings = TerrestrialSettings(system: system); settings.carrierToNoiseDB = 100
+            let picture = TVFrame.colorBars(system.video)
+            _ = try engine.process(TVEngine.encode(picture),settings: settings)
+            settings.rfBandwidthMHz = 3
+            for frame: Int64 in 1...4 {
+                let result = try engine.process(TVEngine.encode(picture,frameIndex: frame),settings: settings)
+                XCTAssertEqual(result.synchronization.horizontal,.locked)
+                XCTAssertEqual(result.synchronization.vertical,.locked)
+                XCTAssertEqual(result.synchronization.color,frame <= 3 ? .holding : .searching)
+            }
+        }
+    }
+
+    func testVerticalSyncCanBeLostWithoutLosingHorizontalSync() throws {
+        for system in TerrestrialSystem.allCases {
+            var engine = TerrestrialEngine(system: system)
+            var settings = TerrestrialSettings(system: system); settings.carrierToNoiseDB = 100
+            let s = system.video, picture = TVFrame.colorBars(s)
+            _ = try engine.process(TVEngine.encode(picture),settings: settings)
+            for frame: Int64 in 1...4 {
+                var composite = try TVEngine.encode(picture,frameIndex: frame)
+                // Erase only each field's equalizing/vertical pulse train. Regular
+                // horizontal sync and burst in the active picture remain intact.
+                for field in 0..<2 {
+                    let startTime = Double(frame)*s.frameDuration+Double(field)*s.frameDuration/2
+                    let start = max(0,Int(ceil(startTime*s.sampleRate-Double(s.sampleOffset(frame: frame)))))
+                    let end = min(composite.samples.count,start+Int(Double(s.equalizingCount*3)*s.samplesPerLine/2))
+                    for n in start..<end { composite.samples[n] = 0 }
+                }
+                let result = try engine.process(composite,settings: settings)
+                XCTAssertEqual(result.synchronization.horizontal,.locked)
+                XCTAssertEqual(result.synchronization.vertical,frame <= 3 ? .holding : .searching)
+                XCTAssertEqual(result.synchronization.color,.locked)
+            }
         }
     }
 

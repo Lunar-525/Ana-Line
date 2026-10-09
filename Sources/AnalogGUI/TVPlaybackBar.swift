@@ -1,7 +1,41 @@
 import SwiftUI
 
+struct TVPlayerView: View {
+    let model: PreviewModel
+    @State private var hovering = false
+    @State private var scrubbing = false
+
+    private var controlsVisible: Bool { hovering || scrubbing }
+
+    var body: some View {
+        PreviewCanvasView(model: model)
+            .frame(width: 640, height: 480)
+            .overlay(alignment: .bottom) {
+                // Keep the bar mounted so Space still works when the pointer is outside.
+                TVPlaybackBar(model: model, controlsVisible: controlsVisible) { scrubbing = $0 }
+                    .padding(12)
+                    .opacity(controlsVisible ? 1 : 0)
+                    .allowsHitTesting(controlsVisible)
+                    .accessibilityHidden(!controlsVisible)
+                    .animation(.easeOut(duration: 0.12), value: controlsVisible)
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .clipped()
+    }
+}
+
 struct TVPlaybackBar: View {
     @ObservedObject var model: PreviewModel
+    @ObservedObject var state: TVPreviewState
+    let controlsVisible: Bool
+    let onScrubbingChanged: (Bool) -> Void
+    init(model: PreviewModel, controlsVisible: Bool = true, onScrubbingChanged: @escaping (Bool) -> Void = { _ in }) {
+        self.model = model
+        state = model.tvPreviewState
+        self.controlsVisible = controlsVisible
+        self.onScrubbingChanged = onScrubbingChanged
+    }
     @State private var scrubbing = false
 
     private var enabled: Bool { model.tvDuration > 0 && !model.busy }
@@ -65,13 +99,21 @@ struct TVPlaybackBar: View {
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { value in
                     guard enabled, geometry.size.width > 0 else { return }
-                    if !scrubbing { scrubbing = true; model.beginTVScrubbing() }
+                    if !scrubbing {
+                        scrubbing = true
+                        onScrubbingChanged(true)
+                        model.beginTVScrubbing()
+                    }
                     model.seekTV(to: min(1, max(0, value.location.x / geometry.size.width)) * model.tvDuration)
                 }
                 .onEnded { _ in
-                    if scrubbing { scrubbing = false; model.endTVScrubbing() }
+                    if scrubbing {
+                        scrubbing = false
+                        model.endTVScrubbing()
+                        onScrubbingChanged(false)
+                    }
                 })
-            .focusable(enabled)
+            .focusable(enabled && controlsVisible)
             .onMoveCommand { direction in
                 guard enabled else { return }
                 if direction == .left { model.seekTV(to: model.tvTime - 5) }

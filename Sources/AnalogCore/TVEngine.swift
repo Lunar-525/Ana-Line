@@ -2,7 +2,7 @@ import Foundation
 import Accelerate
 import Dispatch
 
-public enum TVExecution: Sendable { case reference, accelerated }
+public enum TVExecution: Equatable, Sendable { case reference, accelerated }
 
 /// Each worker owns disjoint elements. The owning array keeps this buffer alive
 /// until synchronous concurrentPerform returns; no pointer escapes that scope.
@@ -72,8 +72,10 @@ public enum TVEngine {
         }
         return output
     }
-    public static func encode(_ frame: TVFrame, frameIndex: Int64 = 0, execution: TVExecution = .accelerated) throws -> CompositeVideo {
+    public static func encode(_ frame: TVFrame, frameIndex: Int64 = 0, execution: TVExecution = .accelerated,
+                              damage: TVEncoderDamageSettings = .init()) throws -> CompositeVideo {
         guard frameIndex >= 0, frameIndex < 1_000_000_000 else { throw TVError.invalidSignal }
+        try damage.validate()
         let s = frame.standard, offset = s.sampleOffset(frame: frameIndex)
         let count = Int(s.sampleOffset(frame: frameIndex+1)-offset)
         var samples = [Float](repeating: 0, count: count)
@@ -101,15 +103,26 @@ public enum TVEngine {
                 let a = max(0,index(t+s.burstStart)), b = min(count,index(t+s.burstStart+s.burstDuration))
                 let linePosition = Double(field) * Double(s.totalLines) / 2 + Double(line)
                 let sign = s.palLineSign(linePosition, frameIndex: frameIndex)
+                let burstPhase = damage.enabled ? Double(damage.burstPhaseDegrees)*Double.pi/180
+                    + Double(damage.burstDriftDegrees)*Double.pi/180*sin(2*Double.pi*Double(damage.burstDriftHz)*(Double(frameIndex)*s.frameDuration+t)) : 0
+                let bc = Float(cos(burstPhase)), bs = Float(sin(burstPhase))
                 if a < b { for i in a..<b {
                     let c = carrier(offset+Int64(i))
-                    samples[i] = s == .pal ? 0.15 * (-c.x+sign*c.y)/sqrt(2) : -0.15*c.x
+                    let reference = s == .pal ? SIMD2<Float>(-0.15/sqrt(2),0.15*sign/sqrt(2)) : SIMD2(-0.15,0)
+                    let burst = SIMD2(reference.x*bc-reference.y*bs,reference.x*bs+reference.y*bc)
+                    samples[i] = damage.enabled ? (burst.x*c.x+burst.y*c.y)*damage.burstAmplitude
+                        : s == .pal ? 0.15*(-c.x+sign*c.y)/sqrt(2) : -0.15*c.x
                 } }
             }
         }
         let yKernel = kernel(cutoff: s == .pal ? 5e6 : 4.2e6, rate: s.sampleRate)
         let uKernel = kernel(cutoff: s == .pal ? 1.3e6 : 1.5e6, rate: s.sampleRate)
         let vKernel = kernel(cutoff: s == .pal ? 1.3e6 : 0.5e6, rate: s.sampleRate)
+        let colorTable: [SIMD3<Float>] = damage.enabled ? (0...256).map { n in
+            let y = Float(n)/256, phase = damage.differentialPhaseDegrees*Float.pi/180*y
+            let gain = 1+damage.differentialGain*y
+            return SIMD3(gain*cos(phase),gain*sin(phase),0)
+        } : []
         samples.withUnsafeMutableBufferPointer { storage in
             let output = TVOutput(buffer: storage)
             perform(count: s.height, execution: execution) { row in
@@ -127,7 +140,13 @@ public enum TVEngine {
                 let sign: Float = s == .pal ? s.palLineSign(line, frameIndex: frameIndex) : 1
                 for x in 0..<length {
                     let c = carrier(offset+Int64(a+x))
-                    output.store(0.7*(y[x]+u[x]*c.x+sign*v[x]*c.y),at: a+x)
+                    var ca = u[x], cb = sign*v[x]
+                    if damage.enabled {
+                        let p = max(0,min(256,y[x]*256)), n = min(255,Int(p)), f = p-Float(n)
+                        let t = colorTable[n]+(colorTable[n+1]-colorTable[n])*f
+                        let next = ca*t.x-cb*t.y; cb = ca*t.y+cb*t.x; ca = next
+                    }
+                    output.store(0.7*(y[x]+ca*c.x+cb*c.y),at: a+x)
                 }
             }
         }
@@ -169,6 +188,7 @@ public enum TVEngine {
     }
 
     public static func decode(_ input: CompositeVideo, settings: TVDecoderSettings = .init(), timing: TVSyncTiming? = nil, execution: TVExecution = .accelerated) throws -> TVDecodeResult {
+        try settings.validate()
         let s = input.standard, samples = input.samples, count = samples.count
         guard samples.allSatisfy(\.isFinite), count == Int(s.sampleOffset(frame: input.frameIndex+1)-s.sampleOffset(frame: input.frameIndex)) else {
             throw TVError.invalidSignal
@@ -206,12 +226,19 @@ public enum TVEngine {
         }
         var descriptors = [Scanline]()
         let rows = Array(stride(from: 0,to: s.height,by: 2))+Array(stride(from: 1,to: s.height,by: 2))
-        var edgeCursor = 0
+        var edgeCursor = 0, priorExpected = -Double.infinity
         for row in rows {
-            let line = s.activeLine(row), expected = origin+line*linePeriod
+            let line = s.activeLine(row)
+            var expected = origin+line*linePeriod
+            if timing?.wrapFrame == true {
+                expected = expected.truncatingRemainder(dividingBy: Double(count))
+                if expected < 0 { expected += Double(count) }
+                if expected < priorExpected { edgeCursor = 0 }
+            }
+            priorExpected = expected
             while edgeCursor+1 < edges.count && abs(Double(edges[edgeCursor+1])-expected) < abs(Double(edges[edgeCursor])-expected) { edgeCursor += 1 }
             let edge = edges[edgeCursor]
-            if abs(Double(edge)-expected) < s.samplesPerLine*0.12 {
+            if abs(Double(edge)-expected) < linePeriod*(timing?.wrapFrame == true ? 0.55 : 0.12) {
                 descriptors.append(Scanline(row: row,line: line,edge: edge))
             }
         }
@@ -247,10 +274,14 @@ public enum TVEngine {
                     let notch = 0.25*samples[i-2]+0.5*samples[i]+0.25*samples[i+2]
                     let luma: Float
                     if settings.separation == .comb, row/2 >= (s == .pal ? 2 : 1), i >= combDelay {
-                        luma = (samples[i]+samples[i-combDelay])*0.5
+                        let comb = (samples[i]+samples[i-combDelay])*0.5
+                        let mismatch = min(1,abs(samples[i]-samples[i-combDelay])/0.3)
+                        let failure = settings.combFailure*mismatch
+                        luma = comb*(1-failure)+notch*failure
                     } else { luma = notch }
-                    y[x] = luma/0.7
-                    let c = carrier(offset+Int64(i)), chroma = (samples[i]-luma)*2/0.7
+                    let separated = luma*(1-settings.chromaLeakage)+samples[i]*settings.chromaLeakage
+                    y[x] = separated/0.7
+                    let c = carrier(offset+Int64(i)), chroma = (samples[i]-separated)*2/0.7
                     u[x] = chroma*(c.x*cp+c.y*sp)*gain
                     v[x] = chroma*(-c.x*sp+c.y*cp)*sign*gain
                 }
@@ -283,7 +314,7 @@ public enum TVEngine {
                     let uu = uj*(1-f)+uk*f, vv = vj*(1-f)+vk*f
                     let pixel: SIMD3<Float>
                     if s == .pal { pixel = SIMD3(yy+1.14025*vv,yy-0.39473*uu-0.58081*vv,yy+2.03252*uu) }
-                    else { pixel = SIMD3(yy+0.956*uu+0.621*vv,yy-0.272*uu-0.647*vv,yy+1.703*uu) }
+                    else { pixel = SIMD3(yy+0.956*uu+0.621*vv,yy-0.272*uu-0.647*vv,yy-1.106*uu+1.703*vv) }
                     output.store(SIMD3(clamp(pixel.x),clamp(pixel.y),clamp(pixel.z)),at: row*s.width+x)
                 }
             }

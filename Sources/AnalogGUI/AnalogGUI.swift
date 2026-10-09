@@ -4,32 +4,85 @@ import ImageIO
 import AnalogCore
 import AnalogImaging
 import UniformTypeIdentifiers
-@preconcurrency import AVFoundation
 
 enum EditingTool: String, CaseIterable { case film = "Film Damage", sstv = "SSTV", tv = "Terrestrial" }
 
 @MainActor
 final class PreviewModel: ObservableObject {
     @Published var original: NSImage?
-    @Published var processed: NSImage?
+    @Published private var stillProcessed: NSImage?
+    let tvPreviewState = TVPreviewState()
+    let tvReceptionState = TVReceptionState()
+    let tvTXInstrumentState = TVTXInstrumentState()
+    private var tvTelemetryBucket: Int?
+    var processed: NSImage? {
+        get { tool == .tv ? tvPreviewState.processed : stillProcessed }
+        set { if tool == .tv { tvPreviewState.processed = newValue } else { stillProcessed = newValue } }
+    }
     @Published var sstvOriginal: NSImage?
-    @Published var tvOriginal: NSImage?
-    @Published var tvDuration: Double = 0
-    @Published var tvTime: Double = 0
+    var tvOriginal: NSImage? {
+        get { tvPreviewState.original }
+        set { tvPreviewState.original = newValue }
+    }
+    @Published var tvDuration: Double = 0 { didSet {
+        if tvControlState.tvDuration != tvDuration { tvControlState.tvDuration = tvDuration }
+    } }
+    var tvTime: Double {
+        get { tvPreviewState.time }
+        set { tvPreviewState.time = newValue }
+    }
     @Published private(set) var tvPlaying = false
-    @Published var tvMuted = false { didSet { tvAudioPlayer?.isMuted = tvMuted } }
-    @Published var tvChannel = TerrestrialSettings(system: .palDK) { didSet { updateSelection() } }
+    @Published var tvMuted = false { didSet { tvAudio.muted = tvMuted } }
+    @Published private(set) var tvHasAudio = false
+    private(set) var tvSoundCarrierDB: Float {
+        get { tvReceptionState.soundCarrierDB }
+        set { tvReceptionState.soundCarrierDB = newValue }
+    }
+    @Published private(set) var tvPreparationProgress: Double?
+    @Published private(set) var tvPreparationStage = TVPreparationProgress.Stage.video
+    @Published private(set) var tvPreparing = false
+    @Published var tvChannel: TerrestrialSettings = {
+        var settings = TerrestrialSettings(system: .palDK)
+        settings.propagation.enabled = true
+        return settings
+    }() { didSet {
+        if tvControlState.tvChannel != tvChannel { tvControlState.tvChannel = tvChannel }
+        tvPlaybackBuffer?.settings = tvChannel
+        updateSelection()
+    } }
     @Published var tvStandard: TVStandard = .pal { didSet {
         if oldValue != tvStandard {
+            if tvControlState.tvStandard != tvStandard { tvControlState.tvStandard = tvStandard }
             tvChannel.rfBandwidthMHz = TerrestrialSystem(video: tvStandard).channelMHz
             reloadTVVideo()
         }
     } }
-    @Published private(set) var tvLock: TelevisionLock = .searching
-    @Published private(set) var tvAGCDB: Float = 0
-    @Published private(set) var tvCarrierErrorHz: Double = 0
-    @Published private(set) var tvSyncConfidence: Float = 0
-    @Published private(set) var tvRecoveredLines = 0
+    private(set) var tvLock: TelevisionLock {
+        get { tvReceptionState.lock }
+        set { tvReceptionState.lock = newValue }
+    }
+    private(set) var tvSynchronization: TelevisionSynchronization {
+        get { tvReceptionState.synchronization }
+        set { tvReceptionState.synchronization = newValue }
+    }
+    private(set) var tvAGCDB: Float {
+        get { tvReceptionState.agcDB }
+        set { tvReceptionState.agcDB = newValue }
+    }
+    private(set) var tvCarrierErrorHz: Double {
+        get { tvReceptionState.carrierErrorHz }
+        set { tvReceptionState.carrierErrorHz = newValue }
+    }
+    private(set) var tvSyncConfidence: Float {
+        get { tvReceptionState.syncConfidence }
+        set { tvReceptionState.syncConfidence = newValue }
+    }
+    private(set) var tvRecoveredLines: Int {
+        get { tvReceptionState.recoveredLines }
+        set { tvReceptionState.recoveredLines = newValue }
+    }
+    let tvVisionSpectrum = TVSpectrumHistory()
+    let tvSoundSpectrum = TVSpectrumHistory()
     var terrestrialSystem: TerrestrialSystem { TerrestrialSystem(video: tvStandard) }
     var tvLockDescription: String {
         switch tvLock {
@@ -39,8 +92,19 @@ final class PreviewModel: ObservableObject {
         }
     }
     private var tvSourceURL: URL?
-    private var tvAudioPlayer: AVPlayer?
+    private let tvAudio = TVAudioOutput()
+    var tvAudioMediaSeconds: Double { tvAudio.mediaSeconds }
+    var tvAudioConsumedSamples: Int64 { tvAudio.consumedSamples }
+    var tvPlaybackRate: Float { tvAudio.rate }
+    var tvAudioUnderrunSamples: Int64 { tvAudio.underrunSamples }
     private var tvPlaybackTask: Task<Void, Never>?
+    private var tvPresentationTask: Task<Void, Never>?
+    private var tvPlaybackActivity: NSObjectProtocol?
+    private var tvPlaybackBuffer: TVPlaybackBuffer?
+    private var tvLastPlaybackMetrics = TVPlaybackMetrics()
+    var tvPlaybackMetrics: TVPlaybackMetrics { tvPlaybackBuffer?.metrics ?? tvLastPlaybackMetrics }
+    // Test harness can suspend production without changing any RF/DSP output.
+    var tvPlaybackRenderHook: (@Sendable (Int64) async throws -> Void)?
     private var tvPlaybackRun = 0
     private var tvResumeAfterScrub = false
     @Published var tool: EditingTool = .film { didSet {
@@ -74,8 +138,15 @@ final class PreviewModel: ObservableObject {
     private var microphoneSamples = [Float]()
     private var playbackRun = 0
     private var microphoneRequest = 0
-    @Published var status = L("Loading Bliss…")
-    @Published var busy = false
+    @Published private var stillStatus = L("Loading Bliss…")
+    var status: String {
+        get { tool == .tv ? tvPreviewState.status : stillStatus }
+        set { if tool == .tv { tvPreviewState.status = newValue } else { stillStatus = newValue } }
+    }
+    let tvControlState = TVControlState()
+    @Published var busy = false { didSet {
+        if tvControlState.busy != busy { tvControlState.busy = busy }
+    } }
     @Published var rendering = false
     @Published var library: LUTLibrary?
     @Published var renderedPreset: LUTPreset?
@@ -211,32 +282,53 @@ final class PreviewModel: ObservableObject {
         busy = true; status = L("Preparing video with FFmpeg…")
         Task {
             do {
-                let duration = try await tvRenderer.loadVideo(url, standard: tvStandard)
+                let duration = try await prepareTVVideo(url)
                 tvDuration = duration; tvTime = min(tvTime, max(0, duration - 1 / tvStandard.frameRate))
-                await prepareTVAudio()
+                tvHasAudio = await tvRenderer.hasAudioTrack()
                 busy = false; updateSelection()
             } catch { busy = false; status = L("TV frame processing failed:") + " \(error.localizedDescription)" }
         }
     }
 
-    private func prepareTVAudio() async {
-        tvAudioPlayer?.pause()
-        let url = await tvRenderer.playbackAudioURL()
-        tvAudioPlayer = url.map { AVPlayer(url: $0) }
-        tvAudioPlayer?.isMuted = tvMuted
+    private func prepareTVVideo(_ url: URL) async throws -> Double {
+        tvVisionSpectrum.reset(); tvSoundSpectrum.reset()
+        tvTXInstrumentState.reading = nil
+        tvSynchronization = TelevisionSynchronization()
+        tvPreparing = true; tvPreparationProgress = nil; tvPreparationStage = .video
+        defer { tvPreparing = false; tvPreparationProgress = nil }
+        return try await tvRenderer.loadVideo(url,standard: tvStandard) { [weak self] progress in
+            Task { @MainActor [weak self] in
+                guard let self, self.tvPreparing else { return }
+                self.tvPreparationStage = progress.stage
+                self.tvPreparationProgress = progress.fraction
+            }
+        }
     }
 
     private func presentTVPreview(_ result: TVRenderer.Preview) {
-        tvOriginal = NSImage(cgImage: result.original, size: NSSize(width: result.original.width, height: result.original.height))
-        processed = NSImage(cgImage: result.image, size: NSSize(width: result.image.width, height: result.image.height))
+        tvOriginal = NSImage(cgImage: result.original, size: NSSize(width: tvStandard.squarePixelWidth, height: tvStandard.height))
+        processed = NSImage(cgImage: result.image, size: NSSize(width: tvStandard.squarePixelWidth, height: tvStandard.height))
         tvTime = Double(result.frameIndex) / tvStandard.frameRate
+        let bucket = Int(floor(tvTime*10+1e-7))
+        // Waterfall buckets are 100 ms. Keep image/transport at the source frame
+        // rate, but update telemetry and spectrum together at that bucket cadence.
+        if tvPlaying, tvTelemetryBucket == bucket { return }
+        tvTelemetryBucket = bucket
+        tvTXInstrumentState.reading = result.reception.transmitter
+        tvVisionSpectrum.update(result.reception.visionSpectrum, time: tvTime)
+        tvSoundSpectrum.update(result.reception.soundSpectrum, time: tvTime)
         tvLock = result.reception.lock; tvAGCDB = result.reception.agcDB
+        tvSynchronization = result.reception.synchronization
         tvCarrierErrorHz = result.reception.carrierErrorHz
         tvSyncConfidence = result.reception.syncConfidence
         tvRecoveredLines = result.reception.recoveredLines
-        status = String(format: "%@ · %.2f / %.2f s · %@ · %@ · RF %.0f ms",
+        tvSoundCarrierDB = result.reception.soundCarrierDB
+        status = String(format: "%@ · %.2f / %.2f s · %@ · %@ · RF %.0f ms / %@ %.0f ms · %.2f×",
             imageDescription, tvTime, result.duration, terrestrialSystem.rawValue, tvLockDescription,
-            result.decodeSeconds * 1000)
+            result.decodeSeconds * 1000,L("Frame total"),(result.totalSeconds-result.prerollSeconds)*1000,tvAudio.rate)
+        if tvPlaying {
+            status += String(format: " · %@ %.0f ms",L("Peak"),tvPlaybackMetrics.maximumProductionSeconds*1000)
+        }
     }
 
     func toggleTVPlayback() {
@@ -248,66 +340,139 @@ final class PreviewModel: ObservableObject {
         renderTask?.cancel(); renderTask = nil; renderRun += 1
         let lastTime = max(0, tvDuration - tvStandard.frameDuration)
         if tvTime >= lastTime { tvTime = 0 }
-        let startTime = tvTime
+        let startTime = tvTime, standard = tvStandard
         tvPlaybackRun += 1
         let run = tvPlaybackRun
+        tvLastPlaybackMetrics = TVPlaybackMetrics()
+        tvTelemetryBucket = nil
+        tvPlaybackActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep,.latencyCritical],
+            reason: "Real-time terrestrial video and audio reception")
         tvPlaying = true; rendering = true
-        tvPlaybackTask = Task {
+        tvPlaybackTask = Task(priority: .userInitiated) { [self] in
             do {
-                if let player = tvAudioPlayer {
-                    _ = await player.seek(to: CMTime(seconds: startTime, preferredTimescale: 60000),
-                        toleranceBefore: .zero, toleranceAfter: .zero)
-                    guard run == tvPlaybackRun, !Task.isCancelled else { return }
-                    player.play()
-                }
-                let clock = ContinuousClock()
-                var time = startTime
-                var playbackRate: Float = 1
-                while !Task.isCancelled {
-                    let frameStart = clock.now
-                    let result = try await tvRenderer.render(time: time, channel: tvChannel)
-                    guard run == tvPlaybackRun, !Task.isCancelled, tool == .tv else { return }
-                    presentTVPreview(result)
-                    if time >= lastTime { tvTime = tvDuration; break }
-                    let spent = frameStart.duration(to: clock.now).components
-                    let spentSeconds = Double(spent.seconds) + Double(spent.attoseconds) / 1e18
-                    // Keep RF samples continuous. A CPU-limited preview slows its clock,
-                    // rather than discarding input frames required by the receiver state.
-                    let desiredRate = Float(min(1, tvStandard.frameDuration / max(spentSeconds, tvStandard.frameDuration)))
-                    playbackRate = 0.7 * playbackRate + 0.3 * desiredRate
-                    if let player = tvAudioPlayer {
-                        let audioTime = player.currentTime().seconds
-                        if audioTime.isFinite, abs(audioTime - time) > 0.15 {
-                            _ = await player.seek(to: CMTime(seconds: time, preferredTimescale: 60000),
-                                toleranceBefore: .zero, toleranceAfter: .zero)
+                await tvRenderer.endPlayback()
+                guard run == tvPlaybackRun, !Task.isCancelled else { return }
+                try tvAudio.prepare()
+                let buffer = TVPlaybackBuffer(settings: tvChannel)
+                tvPlaybackBuffer = buffer
+                let pcmQueue = tvAudio.pcmQueue, renderer = tvRenderer, hook = tvPlaybackRenderHook
+                // The hot producer loop must never await the main actor merely to
+                // deliver a frame. Window layout/painting cannot consume its budget.
+                let producer = Task.detached(priority: .userInitiated) { [self] in
+                    var time = startTime, exhausted = false, outputStarted = false
+                    var pacing = TVPlaybackPacing(), lastRate: Float = 1
+                    while !Task.isCancelled {
+                        var produced = false
+                        while !exhausted && Double(pcmQueue.snapshot.pending)/48_000 < 8*standard.frameDuration {
+                            let productionStart = ContinuousClock.now
+                            try await hook?(Int64((time*standard.frameRate).rounded()))
+                            let result = try await renderer.render(time: time,channel: buffer.settings)
+                            try Task.checkCancellation()
+                            let pcm = result.reception.audio.isEmpty
+                                ? [Float](repeating: 0,count: TVSoundClock.count(frame: result.frameIndex,standard: standard))
+                                : result.reception.audio
+                            try pcmQueue.append(pcm)
+                            buffer.append(result,frameRate: standard.frameRate)
+                            produced = true
+                            let wallCost = TVPlaybackMetrics.seconds(productionStart.duration(to: .now))-result.prerollSeconds
+                            if outputStarted {
+                                buffer.produced(seconds: wallCost,frameDuration: standard.frameDuration,
+                                    preview: result)
+                            }
+                            let requested = pacing.requestedRate(cost: wallCost,frameDuration: standard.frameDuration,
+                                queuedSeconds: Double(pcmQueue.snapshot.pending)/48_000)
+                            // Normal speed needs no main-actor round trip. Only a
+                            // threatened FIFO changes TimePitch's playback rate.
+                            if outputStarted && abs(lastRate-requested) > 0.000001 {
+                                lastRate = await setTVAudioRate(requested,run: run)
+                            }
+                            exhausted = time >= lastTime
+                            time = min(lastTime,Double(result.frameIndex+1)/standard.frameRate)
+                            if outputStarted { break }
                         }
-                        guard run == tvPlaybackRun, !Task.isCancelled else { return }
-                        player.rate = playbackRate
+                        if !outputStarted {
+                            guard try await beginTVAudioPresentation(buffer,startTime: startTime,run: run) else { return }
+                            outputStarted = true
+                        }
+                        if exhausted && pcmQueue.snapshot.pending == 0 {
+                            let latency = await tvAudio.latency
+                            try await Task.sleep(for: .seconds(min(0.5,max(0.03,latency))))
+                            try Task.checkCancellation()
+                            return
+                        }
+                        if produced { await Task.yield() }
+                        else { try await Task.sleep(for: .milliseconds(2)) }
                     }
-                    time = min(lastTime, Double(result.frameIndex + 1) / tvStandard.frameRate)
-                    let remaining = tvStandard.frameDuration - spentSeconds
-                    if remaining > 0 { try await Task.sleep(for: .seconds(remaining)) }
+                    try Task.checkCancellation()
                 }
+                try await withTaskCancellationHandler {
+                    try await producer.value
+                } onCancel: { producer.cancel() }
+                guard run == tvPlaybackRun, !Task.isCancelled else { return }
+                if let last = buffer.lastPreview { presentTVPreview(last) }
+                tvTime = tvDuration
             } catch {
                 guard run == tvPlaybackRun, !Task.isCancelled else { return }
-                status = L("TV frame processing failed:") + " \(error.localizedDescription)"
+                status = L("TV playback failed:") + " \(error.localizedDescription)"
             }
             if run == tvPlaybackRun {
-                tvAudioPlayer?.pause(); tvPlaying = false; rendering = false; tvPlaybackTask = nil
+                tvPresentationTask?.cancel(); tvPresentationTask = nil
+                tvLastPlaybackMetrics = tvPlaybackMetrics; tvPlaybackBuffer = nil
+                tvAudio.stop(); tvPlaying = false; rendering = false; tvPlaybackTask = nil
+                endTVPlaybackActivity()
                 await tvRenderer.endPlayback()
             }
         }
     }
 
+    private func setTVAudioRate(_ requested: Float, run: Int) -> Float {
+        guard run == tvPlaybackRun else { return 1 }
+        tvAudio.setRate(requested)
+        return tvAudio.rate
+    }
+
+    private func beginTVAudioPresentation(_ buffer: TVPlaybackBuffer, startTime: Double, run: Int) throws -> Bool {
+        guard run == tvPlaybackRun, !Task.isCancelled else { return false }
+        try tvAudio.start()
+        tvPresentationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, run == self.tvPlaybackRun else { return }
+                self.presentTVPlayback(buffer,startTime: startTime)
+                do { try await Task.sleep(for: .milliseconds(2)) }
+                catch { return }
+            }
+        }
+        return true
+    }
+
+    private func presentTVPlayback(_ buffer: TVPlaybackBuffer, startTime: Double) {
+        // The paused frame is already visible. Cadence begins after device startup.
+        let audioTime = tvAudio.mediaSeconds
+        guard audioTime > 0, let visible = buffer.visible(at: startTime+audioTime) else { return }
+        presentTVPreview(visible)
+    }
+
     func pauseTVPlayback() {
         let wasPlaying = tvPlaying
         tvPlaybackRun += 1; tvPlaybackTask?.cancel(); tvPlaybackTask = nil
-        tvAudioPlayer?.pause(); tvPlaying = false
-        if wasPlaying { rendering = false; Task { await tvRenderer.endPlayback() } }
+        tvPresentationTask?.cancel(); tvPresentationTask = nil
+        tvLastPlaybackMetrics = tvPlaybackMetrics; tvPlaybackBuffer = nil
+        tvAudio.stop(); tvPlaying = false
+        endTVPlaybackActivity()
+        if wasPlaying { rendering = false }
+    }
+
+    private func endTVPlaybackActivity() {
+        if let activity = tvPlaybackActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            tvPlaybackActivity = nil
+        }
     }
 
     func seekTV(to time: Double) {
         guard tool == .tv, tvDuration > 0, !busy else { return }
+        tvVisionSpectrum.reset(); tvSoundSpectrum.reset()
         let resume = tvPlaying
         pauseTVPlayback()
         let clamped = min(max(0, time), max(0, tvDuration - tvStandard.frameDuration))
@@ -396,13 +561,13 @@ final class PreviewModel: ObservableObject {
             do {
                 if isVideo {
                     status = L("Preparing video with FFmpeg…")
-                    let duration = try await tvRenderer.loadVideo(url, standard: tvStandard)
+                    let duration = try await prepareTVVideo(url)
                     tvSourceURL = url
                     tvOriginal = nil; processed = nil
                     tvDuration = duration
                     tvTime = 0
                     imageDescription = name ?? url.lastPathComponent
-                    await prepareTVAudio()
+                    tvHasAudio = await tvRenderer.hasAudioTrack()
                     busy = false
                     updateSelection()
                     return
@@ -415,7 +580,8 @@ final class PreviewModel: ObservableObject {
                 guard let image = NSImage(data: result.original) else { throw CocoaError(.fileReadCorruptFile) }
                 original = image; processed = tool == .sstv ? sstvOriginal : image; renderedPreset = nil
                 tvDuration = 0; tvOriginal = nil; tvSourceURL = nil
-                tvAudioPlayer = nil
+                tvVisionSpectrum.reset(); tvSoundSpectrum.reset()
+                tvAudio.stop(); tvHasAudio = false
                 await tvRenderer.unloadVideo()
                 imageDescription = "\(name ?? url.lastPathComponent) · \(result.width) × \(result.height) · \(result.profile)"
                 busy = false; updateSelection()
@@ -582,8 +748,12 @@ struct ComparisonView: View {
 
 struct ContentView: View {
     @ObservedObject var languageStore: LanguageStore
-    @StateObject private var model = PreviewModel()
+    @StateObject private var model: PreviewModel
     @State private var dropIsTargeted = false
+    init(languageStore: LanguageStore, model: PreviewModel = PreviewModel()) {
+        self.languageStore = languageStore
+        _model = StateObject(wrappedValue: model)
+    }
     var parameters: [(String,String)] {
         if model.tool == .tv {
             return [(L("Broadcast standard"), model.terrestrialSystem.rawValue),
@@ -615,9 +785,11 @@ struct ContentView: View {
                         ToolModeSwitch(selection: $model.tool)
                             .disabled(model.busy)
                     }
-                    Text(model.status).font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).textSelection(.enabled)
-                        .help(model.status)
+                    if model.tool == .tv { TVStatusText(state: model.tvPreviewState) }
+                    else {
+                        Text(model.status).font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).textSelection(.enabled).help(model.status)
+                    }
                 }
                 Spacer()
                 if model.busy || (model.rendering && !model.tvPlaying) { ProgressView().controlSize(.small) }
@@ -633,6 +805,7 @@ struct ContentView: View {
             .background(Color.black)
             .padding(.horizontal, -20)
             .padding(.top, -20)
+            if model.tvPreparing { TVPreparationBar(model: model) }
             if model.tool == .film { HStack {
                 TextField(L("Search film stocks…"),text: $model.search).textFieldStyle(.roundedBorder).frame(width: 220)
                 Picker(L("Library"),selection: $model.collection) {
@@ -645,27 +818,32 @@ struct ContentView: View {
                     Text("\(model.library?.presets.filter { $0.collection == model.collection }.count ?? 0) presets")
                     .font(.caption).foregroundStyle(.secondary)
             } }
+            if model.tool == .tv {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        HStack(alignment: .top,spacing: 16) {
+                            TVPlayerView(model: model)
+                                .onDrop(of: [UTType.fileURL,UTType.movie],isTargeted: $dropIsTargeted) { providers in
+                                    model.dropImages(providers); return true
+                                }
+                                .overlay { if dropIsTargeted { Rectangle().stroke(EditingTool.tv.logoAccentColor,lineWidth: 3) } }
+                            TVControls(model: model).frame(maxWidth: .infinity)
+                        }.frame(maxWidth: .infinity,alignment: .leading)
+                        TVTransmitterControls(model: model)
+                        TVPropagationView(model: model)
+                        TVReceiverControls(model: model)
+                        TVReceptionView(model: model)
+                    }.padding(.bottom,8).padding(.horizontal,6)
+                }.padding(.horizontal,-6)
+            } else {
             HStack(alignment: .top,spacing: 16) {
                 VStack(spacing: 12) {
-                    ZStack {
-                        Color.black.opacity(0.3)
-                        if let before = model.displayOriginal, let after = model.processed {
-                            ComparisonView(before: before,after: after,
-                                scanProgress: model.transmitting ? CGFloat(model.receivedRows)/CGFloat(model.sstvSettings.mode.height) : nil,
-                                pasteImage: { model.pasteImage() },pasteEnabled: !model.busy).padding(12)
-                        } else {
-                            VStack(spacing: 10) {
-                                Image(systemName: model.tool == .tv ? "film" : "photo.badge.plus").font(.system(size: 30))
-                                Text(model.busy || model.rendering ? L("Generating processed result…") : model.tool == .tv ? L("Drop a video here to start") : L("Drop an image here, or press ⌘V to paste"))
-                                Text(model.tool == .tv ? L("You can also click “Choose Video…” above") : L("You can also click “Choose Image…” above")).font(.caption)
-                            }.foregroundStyle(.secondary)
-                        }
-                    }.overlay {
+                    PreviewCanvasView(model: model).overlay {
                         if dropIsTargeted {
                             RoundedRectangle(cornerRadius: 8)
                                 .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8, 5]))
                                 .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-                                .overlay { Text(model.tool == .tv ? L("Release to load video") : L("Release to load image")).font(.headline).foregroundStyle(.white) }
+                                .overlay { Text(L("Release to load image")).font(.headline).foregroundStyle(.white) }
                         }
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -673,29 +851,34 @@ struct ContentView: View {
                         model.dropImages(providers)
                         return true
                     }
-                    if model.tool == .tv { TVPlaybackBar(model: model) }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 Group {
                     if model.tool == .film { EffectsControls(model: model) }
-                    else if model.tool == .sstv { SSTVControls(model: model) }
-                    else { TVControls(model: model) }
+                    else { SSTVControls(model: model) }
                 }.frame(width: 280)
-                    .disabled(model.busy || (model.tool != .tv && model.original == nil))
+                    .disabled(model.busy || model.original == nil)
             }.frame(minHeight: 360)
-            HStack { Text(L("Drag the divider to compare before and after")); Spacer(); Text(model.tool == .tv ? "\(model.terrestrialSystem.rawValue) · \(model.tvLockDescription)" : model.tool == .sstv ? "\(model.renderedSSTV.mode.rawValue) · \(L("Signal simulation"))" : model.renderedPreset?.name ?? L("Original / No LUT")) }
+            }
+            HStack {
+                Text(L("Drag the divider to compare before and after")); Spacer()
+                if model.tool == .tv { TVLockText(state: model.tvReceptionState,model: model) }
+                else { Text(model.tool == .sstv ? "\(model.renderedSSTV.mode.rawValue) · \(L("Signal simulation"))" : model.renderedPreset?.name ?? L("Original / No LUT")) }
+            }
                 .font(.caption).foregroundStyle(.secondary)
-            Text(model.tool == .tv ? "FFmpeg → \(model.tvStandard.width) × \(model.tvStandard.height) @ \(model.tvStandard.ffmpegFrameRate) → CVBS → VSB RF → multipath / noise → tuner / AGC → sync / burst → RGB" : model.tool == .sstv ? "\(L("Fit")) \(model.renderedSSTV.mode.dimensions) → TX cache → \(L("baseband channel impairment")) → FM demodulation → \(model.renderedSSTV.mode.rawValue) \(L("reconstruction"))" : L("Source ICC → LUT color transform → LUT Mix → Grain → procedural light leak → sRGB display"))
+            if model.tool != .tv { Text(model.tool == .sstv ? "\(L("Fit")) \(model.renderedSSTV.mode.dimensions) → TX cache → \(L("baseband channel impairment")) → FM demodulation → \(model.renderedSSTV.mode.rawValue) \(L("reconstruction"))" : L("Source ICC → LUT color transform → LUT Mix → Grain → procedural light leak → sRGB display"))
                 .font(.caption2).foregroundStyle(.secondary)
+            }
             if model.tool == .film && model.renderedPreset?.role == "sceneToDisplay" {
                 Text(L("PoLUT: adjust pre-LUT exposure to place middle gray; Adobe RGB output is gamut-compressed to sRGB. JPEG already has tone mapping, so scene light is approximate."))
                     .font(.caption).foregroundStyle(.orange)
             }
-            Divider()
+            if model.tool != .tv { Divider()
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 300),alignment: .leading)],alignment: .leading,spacing: 12) {
                 ForEach(parameters,id: \.0) { name,value in
                     HStack { Text(name).foregroundStyle(.secondary); Spacer(); Text(value).monospacedDigit() }
                         .font(.system(size: 12)).padding(10).background(.white.opacity(0.04),in: RoundedRectangle(cornerRadius: 6))
                 }
+            }
             }
         }.id(languageStore.language).padding(20).frame(minWidth: 1000,minHeight: 760).preferredColorScheme(.dark)
             .environment(\.locale, Locale(identifier: languageStore.language.rawValue))

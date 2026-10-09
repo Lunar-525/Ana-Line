@@ -1,0 +1,524 @@
+{
+  "date": "2026-10-09",
+  "hardware": "Apple M3 Max",
+  "cpu_cores": 14,
+  "build": "release",
+  "scope": "Normalized Rickroll, no visible SwiftUI window, excludes loading and seek preroll",
+  "core_before": [
+    {
+      "AGC / sync": 4.5945103750000005,
+      "Carrier / PLL": 16.29974475,
+      "CVBS decode": 4.436869875,
+      "CVBS encode": 1.5882865,
+      "fps": 24.01853654576456,
+      "RF channel": 6.093765500000001,
+      "system": "PAL-D/K",
+      "total_ms": 41.63451,
+      "Tuner / IF": 6.587140499999999,
+      "VSB": 2.0341925
+    },
+    {
+      "AGC / sync": 3.1682916249999997,
+      "Carrier / PLL": 11.185474125,
+      "CVBS decode": 2.590125125,
+      "CVBS encode": 1.154755375,
+      "fps": 37.77113995108666,
+      "RF channel": 3.4938072499999997,
+      "system": "NTSC-M",
+      "total_ms": 26.475240125,
+      "Tuner / IF": 3.374458375,
+      "VSB": 1.5083282500000001
+    }
+  ],
+  "core_after": [
+    {
+      "AFC (included)": 1.3096717500000001,
+      "AGC / sync": 4.18940625,
+      "Carrier / PLL": 8.30003125,
+      "CVBS decode": 4.17743225,
+      "CVBS encode": 1.4679583749999998,
+      "fps": 34.0173474950329,
+      "PLL (included)": 6.990359499999999,
+      "RF channel": 5.010557375,
+      "system": "PAL-D/K",
+      "total_ms": 29.396765875,
+      "Tuner / IF": 4.285385499999999,
+      "VSB": 1.965994875
+    },
+    {
+      "AFC (included)": 0.876989625,
+      "AGC / sync": 2.77625,
+      "Carrier / PLL": 5.206677125000001,
+      "CVBS decode": 2.4526041249999997,
+      "CVBS encode": 1.042260375,
+      "fps": 55.27516498790348,
+      "PLL (included)": 4.3296875,
+      "RF channel": 2.340666625,
+      "system": "NTSC-M",
+      "total_ms": 18.091307375,
+      "Tuner / IF": 2.897109375,
+      "VSB": 1.37573975
+    }
+  ],
+  "sustained_render": [
+    {
+      "frame_budget_ms": 40,
+      "frames": 240,
+      "max_ms": 37.01525,
+      "mean_ms": 32.7570804375,
+      "median_ms": 32.65837500000001,
+      "over_budget_frames": 0,
+      "p95_ms": 34.640459,
+      "system": "PAL-D/K"
+    },
+    {
+      "frame_budget_ms": 33.36666666666666,
+      "frames": 240,
+      "max_ms": 25.585832999999997,
+      "mean_ms": 20.730651187499998,
+      "median_ms": 20.673542,
+      "over_budget_frames": 0,
+      "p95_ms": 21.21325,
+      "system": "NTSC-M"
+    }
+  ],
+  "native_audio_playback": [
+    {
+      "media_speed": 0.9996766516195003,
+      "playback_rate": 0.9999998807907104,
+      "system": "PAL-D/K",
+      "underrun_samples": 0,
+      "wall_seconds": 5.02484
+    },
+    {
+      "media_speed": 1.0012658449364134,
+      "playback_rate": 0.9999998807907104,
+      "system": "NTSC-M",
+      "underrun_samples": 0,
+      "wall_seconds": 5.006062583
+    }
+  ],
+  "rx_waterfall": {
+    "sustained_render": [
+      {
+        "frame_budget_ms": 40,
+        "frames": 240,
+        "max_ms": 36.13725,
+        "mean_ms": 32.785769420833326,
+        "median_ms": 32.714833999999996,
+        "over_budget_frames": 0,
+        "p95_ms": 34.671959,
+        "system": "PAL-D/K"
+      },
+      {
+        "frame_budget_ms": 33.36666666666666,
+        "frames": 240,
+        "max_ms": 20.969042,
+        "mean_ms": 20.45218555,
+        "median_ms": 20.444791,
+        "over_budget_frames": 0,
+        "p95_ms": 20.737833000000002,
+        "system": "NTSC-M"
+      }
+    ],
+    "native_audio_playback": [
+      {
+        "media_speed": 1.0010131397517463,
+        "playback_rate": 0.9999998807907104,
+        "system": "PAL-D/K",
+        "underrun_samples": 0,
+        "wall_seconds": 5.028721292
+      },
+      {
+        "media_speed": 1.0000727946392984,
+        "playback_rate": 0.9999998807907104,
+        "system": "NTSC-M",
+        "underrun_samples": 0,
+        "wall_seconds": 5.001431708
+      }
+    ],
+    "scope": "Actual IQ spectrum included in render; history image updates included in native playback; no visible SwiftUI window"
+  },
+  "propagation_weather_pa": {
+    "scenario": {
+      "distance_km": 12,
+      "carrier_mhz": 600,
+      "antenna": "Yagi",
+      "gain_dbi": 12,
+      "ridge_m": 35,
+      "ground_reflection": 0.1,
+      "rain_mmh": 25,
+      "snow_water_equivalent_mmh": 3,
+      "fog_gm3": 0.1,
+      "humidity_percent": 70,
+      "temperature_c": 25,
+      "sunlight": 0.7,
+      "lightning": 0.5,
+      "remote_interference": 0.2,
+      "pa_backoff_db": 6,
+      "pa_hardness": 0.5,
+      "am_pm_degrees": 5
+    },
+    "sustained_render": [
+      {
+        "frame_budget_ms": 40,
+        "frames": 240,
+        "max_ms": 37.254957999999995,
+        "mean_ms": 33.82559602083335,
+        "over_budget_frames": 0,
+        "p95_ms": 35.72625,
+        "system": "PAL-D/K"
+      },
+      {
+        "frame_budget_ms": 33.36666666666666,
+        "frames": 240,
+        "max_ms": 23.492375,
+        "mean_ms": 22.401768212500013,
+        "over_budget_frames": 0,
+        "p95_ms": 22.840374999999998,
+        "system": "NTSC-M"
+      }
+    ],
+    "native_audio_playback": [
+      {
+        "media_speed": 0.9994403380411709,
+        "playback_rate": 0.9999998807907104,
+        "system": "PAL-D/K",
+        "underrun_samples": 0,
+        "wall_seconds": 5.00373375
+      },
+      {
+        "media_speed": 0.999622949241216,
+        "playback_rate": 0.9999998807907104,
+        "system": "NTSC-M",
+        "underrun_samples": 0,
+        "wall_seconds": 5.003329958
+      }
+    ],
+    "regression_tests": 76
+  },
+  "playback_deadline_fix": {
+    "changes": [
+      "Deadline-based pacing replaces unconditional 10% headroom",
+      "Measure producer wall time and presentation cost",
+      "Static control observation separated from frame clock",
+      "Vector IF mixing and borrowed tuner buffers",
+      "Evaluate PA anti-alias FIR only at decimated samples"
+    ],
+    "sustained_render": [
+      {
+        "frame_budget_ms": 40,
+        "frames": 240,
+        "max_ms": 34.618958,
+        "mean_ms": 32.128121545833324,
+        "over_budget_frames": 0,
+        "p95_ms": 33.266959,
+        "system": "PAL-D/K"
+      },
+      {
+        "frame_budget_ms": 33.36666666666666,
+        "frames": 240,
+        "max_ms": 22.517374999999998,
+        "mean_ms": 21.51321629583334,
+        "over_budget_frames": 0,
+        "p95_ms": 22.099833999999998,
+        "system": "NTSC-M"
+      }
+    ],
+    "visible_window_playback": [
+      {
+        "media_speed": 0.9975089290403765,
+        "playback_rate": 0.9999998807907104,
+        "system": "PAL-D/K",
+        "underrun_samples": 0,
+        "visible_window": true,
+        "wall_seconds": 5.00857425
+      },
+      {
+        "media_speed": 0.9979645901479482,
+        "playback_rate": 0.9999998807907104,
+        "system": "NTSC-M",
+        "underrun_samples": 0,
+        "visible_window": true,
+        "wall_seconds": 5.003219875
+      }
+    ],
+    "scope": "Same moderate propagation/weather/PA scenario as preceding section; real SwiftUI window attached, native audio consumed while muted; 5 seconds per standard; excludes preparation and preroll",
+    "regression_tests": 79
+  },
+  "tail_latency": {
+    "configuration": "Same 12 km propagation/weather/PA profile as preceding sections; RF, sound and both spectra retained.",
+    "sustained_render_1200": [
+      {
+        "frame_budget_ms": 40,
+        "frames": 1200,
+        "max_ms": 35.2755,
+        "mean_ms": 30.0453751383333,
+        "over_budget_frames": 0,
+        "p95_ms": 31.022583,
+        "system": "PAL-D/K"
+      },
+      {
+        "frame_budget_ms": 33.36666666666666,
+        "frames": 1200,
+        "max_ms": 24.128917,
+        "mean_ms": 20.121795393333322,
+        "over_budget_frames": 0,
+        "p95_ms": 20.496042,
+        "system": "NTSC-M"
+      }
+    ],
+    "observed_failure_before_playback_activity": {
+      "visible_window": [
+        {
+          "injected_stalls": false,
+          "maximum_delivery_overhead_ms": 0.40208400000000394,
+          "maximum_presentation_gap_ms": 59.305542,
+          "maximum_presentation_lateness_ms": 21.58337541421318,
+          "maximum_production_ms": 52.148167,
+          "maximum_render_ms": 52.136751,
+          "media_speed": 1.0000453074514457,
+          "playback_rate": 0.9999990463256836,
+          "presented_frames": 764,
+          "produced_frames": 765,
+          "production_deadline_misses": 5,
+          "skipped_frames": 0,
+          "system": "PAL-D/K",
+          "underrun_samples": 0,
+          "visible_window": true,
+          "wall_seconds": 30.003011958
+        },
+        {
+          "injected_stalls": false,
+          "maximum_delivery_overhead_ms": 0.04854099999999917,
+          "maximum_presentation_gap_ms": 45.997167,
+          "maximum_presentation_lateness_ms": 10.637536820773619,
+          "maximum_production_ms": 34.484125,
+          "maximum_render_ms": 34.469291999999996,
+          "media_speed": 1.000126378872055,
+          "playback_rate": 0.9999991655349731,
+          "presented_frames": 916,
+          "produced_frames": 918,
+          "production_deadline_misses": 1,
+          "skipped_frames": 0,
+          "system": "NTSC-M",
+          "underrun_samples": 0,
+          "visible_window": true,
+          "wall_seconds": 30.00080875
+        }
+      ],
+      "default_playback": [
+        {
+          "injected_stalls": false,
+          "maximum_delivery_overhead_ms": 0.05183400000000407,
+          "maximum_presentation_gap_ms": 46.312167,
+          "maximum_presentation_lateness_ms": 9.208333333335261,
+          "maximum_production_ms": 38.585042,
+          "maximum_render_ms": 38.56762500000001,
+          "media_speed": 0.9998152578166845,
+          "playback_rate": 1,
+          "presented_frames": 139,
+          "produced_frames": 140,
+          "production_deadline_misses": 0,
+          "skipped_frames": 0,
+          "system": "PAL-D/K",
+          "underrun_samples": 0,
+          "visible_window": false,
+          "wall_seconds": 5.003591041
+        },
+        {
+          "injected_stalls": false,
+          "maximum_delivery_overhead_ms": 0.02733300000000438,
+          "maximum_presentation_gap_ms": 46.080792,
+          "maximum_presentation_lateness_ms": 10.641666666666438,
+          "maximum_production_ms": 32.122833,
+          "maximum_render_ms": 32.0955,
+          "media_speed": 1.0001438189218461,
+          "playback_rate": 1,
+          "presented_frames": 167,
+          "produced_frames": 169,
+          "production_deadline_misses": 0,
+          "skipped_frames": 0,
+          "system": "NTSC-M",
+          "underrun_samples": 0,
+          "visible_window": false,
+          "wall_seconds": 5.001947292
+        }
+      ],
+      "validation": "Failed strict peak-generation and presentation-lateness checks. Zero underruns or skipped frames is not sufficient acceptance."
+    },
+    "acceptance": {
+      "production_ms": {
+        "PAL-D/K": 40,
+        "NTSC-M": 33.36666666666667
+      },
+      "maximum_presentation_gap_frames": 1.5,
+      "maximum_presentation_lateness_frames": 0.5,
+      "skipped_frames": 0,
+      "underrun_samples": 0
+    },
+    "changes": [
+      "Independent background RF/PCM producer and audio-clock presenter",
+      "Eight-frame bounded audiovisual lead",
+      "Recent-worst-latency FIFO protection replaces mean-cost pacing",
+      "Parallel analytic ionospheric interference",
+      "Frame observations isolated from workspace and static controls",
+      "Receiver telemetry at 100 ms media buckets",
+      "Latency-critical playback activity ends on pause, failure or completion"
+    ],
+    "scope": "Worst observed software delivery/callback times. Core Animation scanout is not instrumented; excludes preparation, priming and seek acquisition.",
+    "visible_window_playback": [
+      {
+        "injected_stalls": false,
+        "maximum_delivery_overhead_ms": 0.02500100000000366,
+        "maximum_presentation_gap_ms": 45.908375,
+        "maximum_presentation_lateness_ms": 9.20833333334059,
+        "maximum_production_ms": 35.884458,
+        "maximum_render_ms": 35.8735,
+        "media_speed": 1.0000834740731872,
+        "playback_rate": 1,
+        "presented_frames": 764,
+        "produced_frames": 765,
+        "production_deadline_misses": 0,
+        "skipped_frames": 0,
+        "system": "PAL-D/K",
+        "underrun_samples": 0,
+        "visible_window": true,
+        "wall_seconds": 30.002828875
+      },
+      {
+        "injected_stalls": false,
+        "maximum_delivery_overhead_ms": 0.04070700000000094,
+        "maximum_presentation_gap_ms": 45.811084,
+        "maximum_presentation_lateness_ms": 10.641666666671767,
+        "maximum_production_ms": 27.377291000000003,
+        "maximum_render_ms": 27.365125,
+        "media_speed": 0.9997581904761199,
+        "playback_rate": 1,
+        "presented_frames": 916,
+        "produced_frames": 918,
+        "production_deadline_misses": 0,
+        "skipped_frames": 0,
+        "system": "NTSC-M",
+        "underrun_samples": 0,
+        "visible_window": true,
+        "wall_seconds": 30.001921417
+      }
+    ],
+    "injected_producer_stalls": [
+      {
+        "injected_stalls": true,
+        "maximum_delivery_overhead_ms": 121.341916,
+        "maximum_presentation_gap_ms": 48.488125,
+        "maximum_presentation_lateness_ms": 9.208333333337038,
+        "maximum_production_ms": 163.975541,
+        "maximum_render_ms": 42.633625,
+        "media_speed": 1.0003992548232057,
+        "playback_rate": 1,
+        "presented_frames": 264,
+        "produced_frames": 265,
+        "production_deadline_misses": 4,
+        "skipped_frames": 0,
+        "system": "PAL-D/K",
+        "underrun_samples": 0,
+        "visible_window": false,
+        "wall_seconds": 10.00134025
+      },
+      {
+        "injected_stalls": true,
+        "maximum_delivery_overhead_ms": 122.21837600000002,
+        "maximum_presentation_gap_ms": 45.07675,
+        "maximum_presentation_lateness_ms": 10.641666666666438,
+        "maximum_production_ms": 150.59066700000002,
+        "maximum_render_ms": 41.971624999999996,
+        "media_speed": 1.00029873827174,
+        "playback_rate": 1,
+        "presented_frames": 317,
+        "produced_frames": 319,
+        "production_deadline_misses": 6,
+        "skipped_frames": 0,
+        "system": "NTSC-M",
+        "underrun_samples": 0,
+        "visible_window": false,
+        "wall_seconds": 10.00234525
+      }
+    ],
+    "default_playback": [
+      {
+        "injected_stalls": false,
+        "maximum_delivery_overhead_ms": 0.05183400000000407,
+        "maximum_presentation_gap_ms": 46.312167,
+        "maximum_presentation_lateness_ms": 9.208333333335261,
+        "maximum_production_ms": 38.585042,
+        "maximum_render_ms": 38.56762500000001,
+        "media_speed": 0.9998152578166845,
+        "playback_rate": 1,
+        "presented_frames": 139,
+        "produced_frames": 140,
+        "production_deadline_misses": 0,
+        "skipped_frames": 0,
+        "system": "PAL-D/K",
+        "underrun_samples": 0,
+        "visible_window": false,
+        "wall_seconds": 5.003591041
+      },
+      {
+        "injected_stalls": false,
+        "maximum_delivery_overhead_ms": 0.02733300000000438,
+        "maximum_presentation_gap_ms": 46.080792,
+        "maximum_presentation_lateness_ms": 10.641666666666438,
+        "maximum_production_ms": 32.122833,
+        "maximum_render_ms": 32.0955,
+        "media_speed": 1.0001438189218461,
+        "playback_rate": 1,
+        "presented_frames": 167,
+        "produced_frames": 169,
+        "production_deadline_misses": 0,
+        "skipped_frames": 0,
+        "system": "NTSC-M",
+        "underrun_samples": 0,
+        "visible_window": false,
+        "wall_seconds": 5.001947292
+      }
+    ],
+    "scene_playback": [
+      {
+        "injected_stalls": false,
+        "maximum_delivery_overhead_ms": 0.733874999999995,
+        "maximum_presentation_gap_ms": 45.782458999999996,
+        "maximum_presentation_lateness_ms": 9.208333333335261,
+        "maximum_production_ms": 36.59525,
+        "maximum_render_ms": 36.58175000000001,
+        "media_speed": 0.999702122805769,
+        "playback_rate": 1,
+        "presented_frames": 139,
+        "produced_frames": 140,
+        "production_deadline_misses": 0,
+        "skipped_frames": 0,
+        "system": "PAL-D/K",
+        "underrun_samples": 0,
+        "visible_window": false,
+        "wall_seconds": 5.004157291
+      },
+      {
+        "injected_stalls": false,
+        "maximum_delivery_overhead_ms": 0.32570799999999744,
+        "maximum_presentation_gap_ms": 45.490834,
+        "maximum_presentation_lateness_ms": 10.641666666666438,
+        "maximum_production_ms": 27.173125,
+        "maximum_render_ms": 27.160291,
+        "media_speed": 1.0002216726619937,
+        "playback_rate": 1,
+        "presented_frames": 167,
+        "produced_frames": 169,
+        "production_deadline_misses": 0,
+        "skipped_frames": 0,
+        "system": "NTSC-M",
+        "underrun_samples": 0,
+        "visible_window": false,
+        "wall_seconds": 5.001557958
+      }
+    ],
+    "validation": "71 core and 12 GUI/audio tests passed in separate runs, including 30 seconds per standard in an actual NSWindow. Peak assertions unchanged after recorded failures."
+  }
+}
