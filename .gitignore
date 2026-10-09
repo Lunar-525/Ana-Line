@@ -1,0 +1,51 @@
+# macOS
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/
+
+# SwiftPM and build products
+.build/
+.swiftpm/
+/build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.dSYM/
+*.ipa
+*.dmg
+*.pkg
+
+# Editor and local agent settings
+.idea/
+.vscode/
+.codex/
+.agents/
+*.swp
+*.swo
+*~
+
+# Python development helpers
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+.aws/
+*.p12
+*.pfx
+*.key
+
+# Local test media without a redistribution grant
+/Assets/bliss.jpg
+/Assets/rickroll.mp4
+
+# Logs and temporary output
+*.log
+*.tmp
+/coverage/

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Ana-Line AL app icon · shared">
+<defs><linearGradient id="tile" x2="0" y2="1"><stop stop-color="#1d1d1d"/><stop offset="1" stop-color="#060606"/></linearGradient></defs>
+<rect x="100" y="100" width="824" height="824" rx="182" fill="url(#tile)" stroke="#454545" stroke-opacity=".5" stroke-width="2"/>
+<g transform="translate(304.48007342853754 297.0) scale(2.15) skewX(-13)"><path fill="#f2f2e8" fill-rule="nonzero" d="M0 200 57.5 0H117.5L175 200H125L115 155H57.5L47.5 200ZM67.5 115H105L87.5 45Z"/><path fill="#f2f2e8" fill-rule="nonzero" d="M132 0H180V155H275V200H132Z"/><path fill="#d5ed79" fill-rule="nonzero" d="M213 155H275V200H213Z"/></g>
+</svg>
