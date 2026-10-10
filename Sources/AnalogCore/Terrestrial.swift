@@ -489,6 +489,8 @@ public struct TerrestrialReceiver: Sendable {
     private var carrierFilterI: TelevisionFIR?
     private var carrierFilterQ: TelevisionFIR?
     private var carrierFilterRate: Double = 0
+    /// Detected video before the sound notch: the intercarrier tap.
+    private(set) var detectedVideo: [Float] = []
     private var carrierPhase = 0.0
     private(set) var carrierFrequency = 0.0
     private var gain: Float = 1
@@ -708,11 +710,14 @@ public struct TerrestrialReceiver: Sendable {
         // Notch the companion carrier before AGC and sync. A wide vision IF keeps
         // the +4.5/+6.5 MHz sound carrier, whose beat otherwise corrupts the
         // sync-tip quantile and the slicer. State persists across the session.
-        if soundNotch == nil || notchRate != rate {
-            soundNotch = TVSoundNotch(frequency: system.soundCarrierHz,rate: rate)
-            notchRate = rate
+        detectedVideo = demod
+        if settings.frontEnd.soundNotchPolicy == .suppressed {
+            if soundNotch == nil || notchRate != rate {
+                soundNotch = TVSoundNotch(frequency: system.soundCarrierHz,rate: rate)
+                notchRate = rate
+            }
+            demod = soundNotch!.process(demod)
         }
-        demod = soundNotch!.process(demod)
         // Sync-tip keyed AGC is approximated by the upper carrier-amplitude quantile.
         // Independent RF noise means AGC cannot recover S/N after deep attenuation.
         let probes = stride(from: 128, to: count, by: 97).map { demod[$0] }.sorted()

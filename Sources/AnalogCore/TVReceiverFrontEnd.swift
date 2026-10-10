@@ -26,6 +26,19 @@ struct TVSoundNotch: Sendable {
     }
 }
 
+/// How the companion carrier is recovered at the detector.
+public enum TVSoundDetectionMode: String, Codable, CaseIterable, Sendable {
+    /// Band-select the carrier from the shared IF before video detection.
+    case splitSound
+    /// Recover the beat between the two carriers from the detected video.
+    case intercarrier
+}
+
+/// Whether the detected video has the companion beat removed before AGC/sync.
+public enum TVSoundNotchPolicy: String, Codable, CaseIterable, Sendable {
+    case suppressed, bypassed
+}
+
 /// Receiver front-end configuration: common gain plus a bypassable memoryless
 /// input/IF nonlinearity. It deliberately does not reuse the transmitter PA
 /// settings; the receiver has its own saturation reference, state and defaults.
@@ -42,10 +55,14 @@ public struct TVFrontEndSettings: Codable, Equatable, Sendable {
     public var ifSaturationDB: Float = 12
     public var ifHardness: Float = 0.5
     public var ifAMPMDegrees: Float = 0
+    /// Companion-carrier recovery mode.
+    public var soundDetection: TVSoundDetectionMode = .splitSound
+    /// Video sound-notch policy; bypassing it demonstrates sound-on-vision.
+    public var soundNotchPolicy: TVSoundNotchPolicy = .suppressed
     public init() {}
     public enum CodingKeys: String, CodingKey {
         case enabled, gainDB, inputSaturationDB, inputHardness, inputAMPMDegrees
-        case ifSaturationDB, ifHardness, ifAMPMDegrees
+        case ifSaturationDB, ifHardness, ifAMPMDegrees, soundDetection, soundNotchPolicy
     }
     /// Unknown or missing keys fall back to their defaults, so a session written
     /// before a field existed still decodes. New fields must use decodeIfPresent.
@@ -59,6 +76,8 @@ public struct TVFrontEndSettings: Codable, Equatable, Sendable {
         ifSaturationDB = try c.decodeIfPresent(Float.self,forKey: .ifSaturationDB) ?? 12
         ifHardness = try c.decodeIfPresent(Float.self,forKey: .ifHardness) ?? 0.5
         ifAMPMDegrees = try c.decodeIfPresent(Float.self,forKey: .ifAMPMDegrees) ?? 0
+        soundDetection = try c.decodeIfPresent(TVSoundDetectionMode.self,forKey: .soundDetection) ?? .splitSound
+        soundNotchPolicy = try c.decodeIfPresent(TVSoundNotchPolicy.self,forKey: .soundNotchPolicy) ?? .suppressed
     }
     func validate() throws {
         let checks: [(Float,ClosedRange<Float>)] = [(gainDB,-20...60),(inputSaturationDB,-40...60),

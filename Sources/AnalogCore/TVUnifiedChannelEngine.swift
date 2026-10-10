@@ -19,6 +19,7 @@ public struct TVUnifiedChannelEngine: Sendable {
     private var visionAmplifier = TVTransmitterAmplifier()
     private var soundAmplifier = TVTransmitterAmplifier()
     private var extractor: TVSoundExtractor
+    private var extractorMode: TVSoundDetectionMode = .splitSound
     private var demodulator: TVSoundDemodulator
     private let soundSpectrumAnalyzer = TVSpectrumAnalyzer(log2Size: 9)
 
@@ -100,11 +101,23 @@ public struct TVUnifiedChannelEngine: Sendable {
         result.timings.modulation = TerrestrialTimings.seconds(start.duration(to: modulated))
         result.timings.channel = TerrestrialTimings.seconds(modulated.duration(to: channelDone))
         if let audio {
-            // The front end already tuned the channel; remove the remaining carrier
-            // offset and convert the shared IF output to the narrowband sound rate.
-            let shift = system.soundCarrierHz-Double(settings.tuningOffsetKHz)*1000
-            let extracted = extractor.extract(i: reception.1.i,q: reception.1.q,frameIndex: input.frameIndex,
-                firstSampleIndex: reception.1.firstSampleIndex,sampleRate: reception.1.sampleRate,shiftHz: shift)
+            // Recover the companion carrier from the shared receiver pass. Split
+            // Sound selects it from the IF; Intercarrier takes the beat from the
+            // detected video, where a common tuning error has already cancelled.
+            if extractorMode != settings.frontEnd.soundDetection {
+                extractor.reset(); extractorMode = settings.frontEnd.soundDetection
+            }
+            let extracted: TVSoundIQ
+            switch settings.frontEnd.soundDetection {
+            case .intercarrier:
+                extracted = extractor.extractIntercarrier(receiver.detectedVideo,frameIndex: input.frameIndex,
+                    firstSampleIndex: system.video.sampleOffset(frame: input.frameIndex),
+                    sampleRate: system.video.sampleRate,carrierHz: system.soundCarrierHz)
+            case .splitSound:
+                let shift = system.soundCarrierHz-Double(settings.tuningOffsetKHz)*1000
+                extracted = extractor.extract(i: reception.1.i,q: reception.1.q,frameIndex: input.frameIndex,
+                    firstSampleIndex: reception.1.firstSampleIndex,sampleRate: reception.1.sampleRate,shiftHz: shift)
+            }
             let recovered = demodulator.demodulate(extracted,settings: settings,visionCorrectionHz: 0,
                                                    receiverGain: receiver.currentGain)
             result.audio = recovered.samples
