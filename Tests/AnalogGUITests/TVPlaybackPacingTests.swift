@@ -12,18 +12,24 @@ final class TVPlaybackPacingTests: XCTestCase {
         }
         XCTAssertEqual(pacing.requestedRate(cost: 0.09,frameDuration: 0.04,queuedSeconds: 0.2),1)
         for _ in 0..<120 { _ = pacing.requestedRate(cost: 0.06,frameDuration: 0.04,queuedSeconds: 0.1) }
-        XCTAssertEqual(pacing.requestedRate(cost: 0.06,frameDuration: 0.04,queuedSeconds: 0.1),Float(0.04/0.0612),accuracy: 0.001)
+        XCTAssertEqual(pacing.requestedRate(cost: 0.06,frameDuration: 0.04,queuedSeconds: 0.1),1)
         for _ in 0..<120 { _ = pacing.requestedRate(cost: 0.03,frameDuration: 0.04,queuedSeconds: 0.2) }
         XCTAssertEqual(pacing.requestedRate(cost: 0.03,frameDuration: 0.04,queuedSeconds: 0.2),1)
     }
 
-    func testWorstRecentFrameProtectsLowBufferWithoutSlowingHealthyBuffer() {
+    func testOverloadNeverSlowsClockAndNextFrameCatchesUpForBothStandards() {
         var pacing = TVPlaybackPacing()
-        XCTAssertLessThan(pacing.requestedRate(cost: 0.12,frameDuration: 0.04,queuedSeconds: 0.06),0.34)
-        XCTAssertLessThan(pacing.requestedRate(cost: 0.02,frameDuration: 0.04,queuedSeconds: 0.06),0.34)
+        XCTAssertEqual(pacing.requestedRate(cost: 0.12,frameDuration: 0.04,queuedSeconds: 0.06),1)
+        XCTAssertEqual(pacing.requestedRate(cost: 0.02,frameDuration: 0.04,queuedSeconds: 0.06),1)
         XCTAssertEqual(pacing.requestedRate(cost: 0.02,frameDuration: 0.04,queuedSeconds: 0.16),1)
         for _ in 0..<8 { _ = pacing.requestedRate(cost: 0.02,frameDuration: 0.04,queuedSeconds: 0.06) }
         XCTAssertEqual(pacing.requestedRate(cost: 0.02,frameDuration: 0.04,queuedSeconds: 0.06),1)
+        for standard in TVStandard.allCases {
+            let next = TVPlaybackPacing.nextFrame(after: 2,consumedSamples: 48_000,startSample: 0,standard: standard)
+            XCTAssertGreaterThanOrEqual(Double(next)/standard.frameRate,1)
+            XCTAssertEqual(TVPlaybackPacing.nextFrame(after: 40,consumedSamples: 48_000,startSample: 0,standard: standard),40)
+        }
+        XCTAssertTrue(TVStatusText.isNormalSpeed(1)); XCTAssertFalse(TVStatusText.isNormalSpeed(0.95))
     }
 
     func testControlsSynchronizeBothDirectionsWithoutObservingFrameClock() {
@@ -32,6 +38,10 @@ final class TVPlaybackPacingTests: XCTestCase {
         var changes = 0
         let subscription = state.objectWillChange.sink { changes += 1 }
         model.tvTime = 10; model.status = "Frame received"
+        var settings = TVPropagationSettings(); settings.enabled = true
+        settings.weather.enabled = true; settings.weather.lightning = 1
+        let events = TVLightningTimeline.events(time: 0,duration: 4,seed: 42,settings: settings)
+        model.tvLightningState.present(events: events,time: 10)
         XCTAssertEqual(changes,0,"Clock/status updates must not invalidate configuration panels")
         state.tvChannel.propagation.antennaGainDB = 15
         XCTAssertEqual(model.tvChannel.propagation.antennaGainDB,15)

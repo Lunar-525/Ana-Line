@@ -48,7 +48,7 @@ private struct TVInterferenceSamples: @unchecked Sendable {
     }
 }
 
-public enum TVAntennaKind: String, CaseIterable, Sendable {
+public enum TVAntennaKind: String, CaseIterable, Codable, Sendable {
     case dipole = "Dipole", yagi = "Yagi", logPeriodic = "Log-periodic", bowTie = "Bow-tie array"
     public var nominalGainDB: Float {
         switch self { case .dipole: 2.15; case .yagi: 12; case .logPeriodic: 8; case .bowTie: 10 }
@@ -64,7 +64,7 @@ public enum TVAntennaKind: String, CaseIterable, Sendable {
     }
 }
 
-public struct TVWeatherSettings: Equatable, Sendable {
+public struct TVWeatherSettings: Codable, Equatable, Sendable {
     public var enabled = false
     public var rainMMHour: Float = 0
     public var snowMMHour: Float = 0 // water equivalent, not snow depth
@@ -73,13 +73,16 @@ public struct TVWeatherSettings: Equatable, Sendable {
     public var temperatureC: Float = 20
     public var sunlight: Float = 0.5
     public var clutter: Float = 0.5
+    /// Normalized amplitude of each strike, independent of its occurrence rate.
     public var lightning: Float = 0
+    /// Average randomized strikes per minute; zero disables strike generation.
+    public var lightningRatePerMinute: Float = 30
     /// A remote co-channel source admitted by anomalous ionospheric propagation.
     public var ionization: Float = 0
     public init() {}
 }
 
-public struct TVPropagationSettings: Equatable, Sendable {
+public struct TVPropagationSettings: Codable, Equatable, Sendable {
     public var enabled = false
     public var frequencyMHz: Float = 600
     public var distanceKm: Float = 10
@@ -103,7 +106,7 @@ public struct TVPropagationSettings: Equatable, Sendable {
             (groundReflection,0...0.8),(weather.rainMMHour,0...120),(weather.snowMMHour,0...20),
             (weather.fogGramsM3,0...0.5),(weather.humidityPercent,0...100),
             (weather.temperatureC,-30...50),(weather.sunlight,0...1),(weather.clutter,0...1),
-            (weather.lightning,0...1),(weather.ionization,0...1)]
+            (weather.lightning,0...1),(weather.lightningRatePerMinute,0...120),(weather.ionization,0...1)]
         guard checks.allSatisfy({ $0.0.isFinite && $0.1.contains($0.0) }) else { throw TVError.invalidSettings }
     }
 }
@@ -245,7 +248,7 @@ struct TVSceneChannel: Sendable {
         let w = s.weather, f = Double(s.frequencyMHz)*1e6+carrierOffsetHz
         let ion = Double(w.ionization)*min(1,pow(100e6/f,3.5))*(0.6+0.4*Double(w.sunlight))
             * pow(10,(Double(s.antennaGainDB)-12-s.antenna.lossDB(offAxisDegrees: Double(s.antennaElevationDegrees)-10))/20)
-        guard w.lightning > 0 || ion > 0 else { return }
+        guard (w.lightning > 0 && w.lightningRatePerMinute > 0) || ion > 0 else { return }
         let count = i.count
         i.withUnsafeMutableBufferPointer { ip in q.withUnsafeMutableBufferPointer { qp in
             if ion > 0 {
@@ -256,33 +259,24 @@ struct TVSceneChannel: Sendable {
                         amplitude: Float(0.7*ion),rate: rate,time: time,sound: carrierOffsetHz > 1e6)
                 }
             }
-            if w.lightning > 0 {
-                let first = Int(floor(time*4))-1, last = Int(floor((time+Double(count)/rate)*4))
-                for cell in max(0,first)...max(0,last) {
-                    let random = hash(seed &+ UInt64(cell)*0x9e3779b9)
-                    guard Double(random & 0xffff)/65535 < Double(w.lightning)*0.5 else { continue }
-                    let eventTime = Double(cell)*0.25+0.02+Double((random >> 16)&0xffff)/65535*0.20
+            if w.lightning > 0 && w.lightningRatePerMinute > 0 {
+                for event in TVLightningTimeline.events(time: time,duration: Double(count)/rate,seed: seed,settings: s) {
+                    let eventTime = event.time
                     let begin = max(0,Int(floor((eventTime-time)*rate)))
-                    let end = min(count,Int(ceil((eventTime+0.003-time)*rate)))
+                    let end = min(count,Int(ceil((eventTime+TVLightningEvent.pulseDuration-time)*rate)))
                     guard begin < end else { continue }
-                    let amplitude = Float(1+7*Double(w.lightning))*Float(sqrt(min(1,100e6/f)*rate/noiseReferenceRate))
+                    let amplitude = 8*event.intensity*Float(sqrt(min(1,100e6/f)*rate/noiseReferenceRate))
                     for n in begin..<end {
                         let age = time+Double(n)/rate-eventTime
                         guard age >= 0 else { continue }
                         let decay = Float(exp(-age/0.0006))
                         let key = UInt64(max(0,Int64((time*rate).rounded())+Int64(n)))
-                        let noise = hash(random ^ key)
+                        let noise = TVLightningTimeline.hash(event.token ^ key)
                         ip[n] += amplitude*decay*(Float(noise & 0xffff)/32767.5-1)
                         qp[n] += amplitude*decay*(Float((noise >> 16)&0xffff)/32767.5-1)
                     }
                 }
             }
         } }
-    }
-    private static func hash(_ input: UInt64) -> UInt64 {
-        var z = input &+ 0x9e3779b97f4a7c15
-        z = (z ^ (z >> 30)) &* 0xbf58476d1ce4e5b9
-        z = (z ^ (z >> 27)) &* 0x94d049bb133111eb
-        return z ^ (z >> 31)
     }
 }

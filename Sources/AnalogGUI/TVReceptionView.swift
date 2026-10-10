@@ -70,55 +70,83 @@ final class TVSpectrumHistory: ObservableObject {
 
 struct TVReceptionView: View {
     @ObservedObject var model: PreviewModel
-    @ObservedObject var state: TVReceptionState
-    init(model: PreviewModel) { self.model = model; state = model.tvReceptionState }
+    init(model: PreviewModel) { self.model = model }
     @State private var sound = false
-    private var active: Bool { model.tvDuration > 0 && !model.tvPreparing }
     var body: some View {
-        HStack(alignment: .top, spacing: 20) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(L("Reception")).font(.system(size: 12, weight: .semibold))
-                HStack(spacing: 14) {
-                    syncLight("H Sync", state: model.tvSynchronization.horizontal)
-                    syncLight("V Sync", state: model.tvSynchronization.vertical)
-                    syncLight("Color Sync", state: model.tvSynchronization.color)
-                }.padding(.bottom, 2)
-                metric(L("Receiver lock"), model.tvLockDescription)
-                metric("AGC", String(format: "%+.1f dB", model.tvAGCDB))
-                metric(L("Carrier error"), String(format: "%+.0f Hz", model.tvCarrierErrorHz))
-                metric(L("Sync confidence"), String(format: "%.0f%%", model.tvSyncConfidence*100))
-                metric(L("Recovered lines"), "\(model.tvRecoveredLines) / \(model.tvStandard.height)")
-                metric(L("FM sound"), model.tvHasAudio ? String(format: "%.1f dB", model.tvSoundCarrierDB) : L("No audio track"))
-            }.frame(width: 260)
-            Rectangle().fill(.black.opacity(0.12)).frame(width: 1)
-            VStack(spacing: 5) {
-                HStack {
-                    Text(L("RX spectrum / waterfall")).font(.system(size: 12, weight: .semibold))
-                    Spacer()
+        HStack(alignment: .top,spacing: 10) {
+            TVReceptionReadout(model: model).frame(width: 142)
+            VStack(spacing: 4) {
+                HStack(spacing: 4) {
+                    Text(L("RX spectrum / waterfall"))
+                        .font(.system(size: 9,weight: .semibold,design: .monospaced)).lineLimit(1)
+                    Spacer(minLength: 2)
                     Button("VSB") { sound = false }.buttonStyle(SpectrumTabStyle(selected: !sound))
                     Button("FM") { sound = true }.buttonStyle(SpectrumTabStyle(selected: sound))
-                }
+                }.foregroundStyle(TVInstrumentPalette.ink)
                 TVSpectrumPlot(history: sound ? model.tvSoundSpectrum : model.tvVisionSpectrum,
                     fallbackRate: sound ? 384_000 : model.tvStandard.sampleRate,
                     fallbackCenter: sound ? model.terrestrialSystem.soundCarrierHz-Double(model.tvChannel.tuningOffsetKHz)*1000 : 0,
                     carrierHz: sound ? model.terrestrialSystem.soundCarrierHz-Double(model.tvChannel.tuningOffsetKHz)*1000 : -Double(model.tvChannel.tuningOffsetKHz)*1000,
                     noAudio: sound && !model.tvHasAudio)
-            }.frame(maxWidth: .infinity)
-        }
-        .foregroundStyle(.black).padding(14).frame(height: 218)
-        .background(Rectangle().fill(.white).shadow(color: .black.opacity(0.35), radius: 5, y: 2))
+            }.frame(maxWidth: .infinity,maxHeight: .infinity)
+        }.padding(.horizontal,23).padding(.vertical,10).frame(height: 174)
+            .background(TVRackHousing(finish: .transmitter))
+            .environment(\.colorScheme,.dark)
     }
-    private func metric(_ label: String, _ value: String) -> some View {
-        HStack { Text(label).foregroundStyle(.black.opacity(0.55)); Spacer(); Text(active ? value : "—").monospacedDigit() }
-            .font(.system(size: 11))
+}
+
+private enum TVInstrumentPalette {
+    static let screen = Color(red: 0.016,green: 0.028,blue: 0.03)
+    static let ink = Color(red: 0.79,green: 0.88,blue: 0.84)
+    static let muted = Color(red: 0.46,green: 0.57,blue: 0.54)
+    static let amber = Color(red: 0.9,green: 0.77,blue: 0.4)
+}
+
+/// Only this readout observes receiver telemetry; rack controls stay static.
+private struct TVReceptionReadout: View {
+    @ObservedObject var model: PreviewModel
+    @ObservedObject var state: TVReceptionState
+    init(model: PreviewModel) { self.model = model; state = model.tvReceptionState }
+    private var active: Bool { model.tvDuration > 0 && !model.tvPreparing }
+    var body: some View {
+        VStack(alignment: .leading,spacing: 8) {
+            Text(L("Reception")).font(.system(size: 9,weight: .semibold,design: .monospaced))
+                .foregroundStyle(TVInstrumentPalette.ink)
+            HStack(spacing: 10) {
+                syncLight("H",label: "H Sync",state: state.synchronization.horizontal)
+                syncLight("V",label: "V Sync",state: state.synchronization.vertical)
+                syncLight("COLOR",label: "Color Sync",state: state.synchronization.color)
+            }
+            VStack(spacing: 5) {
+                metric(L("Receiver lock"),model.tvLockDescription)
+                metric("AGC",String(format: "%+.1f dB",state.agcDB))
+                metric(L("Carrier error"),String(format: "%+.0f Hz",state.carrierErrorHz))
+                metric(L("Sync confidence"),String(format: "%.0f%%",state.syncConfidence*100))
+                metric(L("Recovered lines"),"\(state.recoveredLines) / \(model.tvStandard.height)")
+                metric(L("FM sound"),model.tvHasAudio ? String(format: "%.1f dB",state.soundCarrierDB) : L("No audio track"))
+            }.padding(8).frame(maxWidth: .infinity,maxHeight: .infinity)
+                .background(TVInstrumentPalette.screen)
+                .overlay(Rectangle().stroke(.black,lineWidth: 2))
+                .overlay(Rectangle().stroke(.white.opacity(0.06),lineWidth: 0.5).padding(1))
+        }.frame(maxHeight: .infinity)
     }
-    private func syncLight(_ label: String, state: TelevisionLock) -> some View {
-        let color: Color = !active ? .gray : state == .locked ? .green : state == .holding ? .orange : .red
+    private func metric(_ label: String,_ value: String) -> some View {
+        HStack(spacing: 3) {
+            Text(label).foregroundStyle(TVInstrumentPalette.muted)
+            Spacer(minLength: 2)
+            Text(active ? value : "—").monospacedDigit().foregroundStyle(TVInstrumentPalette.ink)
+        }.font(.system(size: 8,design: .monospaced)).lineLimit(1).minimumScaleFactor(0.8)
+            .help("\(label) · \(active ? value : L("No signal"))")
+    }
+    private func syncLight(_ title: String,label: String,state: TelevisionLock) -> some View {
+        let color: Color = !active ? Color(white: 0.2) : state == .locked ? .green : state == .holding ? .orange : .red
         let status = !active ? L("No signal") : state == .locked ? L("Locked") : state == .holding ? L("Sync holdover") : L("Acquiring sync")
-        return HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 8, height: 8)
-                .shadow(color: color.opacity(active ? 0.4 : 0), radius: 3)
-            Text(label).font(.system(size: 10)).fixedSize()
+        return HStack(spacing: 4) {
+            Circle().fill(.black).frame(width: 9,height: 9)
+                .overlay(Circle().fill(RadialGradient(colors: [color.opacity(0.9),color.opacity(0.45)],center: .topLeading,startRadius: 0,endRadius: 7)).padding(1))
+                .overlay(Circle().stroke(.white.opacity(0.16),lineWidth: 0.5))
+                .shadow(color: color.opacity(active ? 0.35 : 0),radius: 2)
+            Text(title).font(.system(size: 7,weight: .medium,design: .monospaced)).foregroundStyle(TVInstrumentPalette.muted)
         }.help("\(label) · \(status)")
             .accessibilityElement(children: .ignore).accessibilityLabel(label).accessibilityValue(status)
     }
@@ -127,9 +155,11 @@ struct TVReceptionView: View {
 private struct SpectrumTabStyle: ButtonStyle {
     let selected: Bool
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.system(size: 10, weight: .semibold))
-            .padding(.horizontal, 10).padding(.vertical, 3)
-            .background(selected ? EditingTool.tv.logoAccentColor : .black.opacity(configuration.isPressed ? 0.15 : 0.06))
+        configuration.label.font(.system(size: 8,weight: .semibold,design: .monospaced))
+            .foregroundStyle(selected ? .black : TVInstrumentPalette.muted)
+            .padding(.horizontal,7).frame(height: 16)
+            .background(selected ? TVInstrumentPalette.amber : Color(white: configuration.isPressed ? 0.14 : 0.045))
+            .overlay(Rectangle().stroke(.white.opacity(0.12),lineWidth: 0.5))
     }
 }
 
@@ -142,14 +172,14 @@ private struct TVSpectrumPlot: View {
     var body: some View {
         VStack(spacing: 3) {
             HStack {
-                Text(L("Pre-AGC · relative to tuner · MHz"))
+                Text("RX · MHz")
                 Spacer()
-                Text(history.spectrum.map { String(format: "RBW %.2f kHz · dBFS/bin", $0.resolutionHz/1000) } ?? "dBFS/bin")
-            }.font(.system(size: 9)).foregroundStyle(.black.opacity(0.55)).lineLimit(1)
+                Text(history.spectrum.map { String(format: "RBW %.2f kHz", $0.resolutionHz/1000) } ?? "dBFS/bin")
+            }.font(.system(size: 8,design: .monospaced)).foregroundStyle(TVInstrumentPalette.muted).lineLimit(1)
             GeometryReader { g in
-                let traceHeight: CGFloat = 42
+                let traceHeight: CGFloat = 32
                 ZStack(alignment: .topLeading) {
-                    Color(red: 0.008, green: 0.016, blue: 0.04)
+                    TVInstrumentPalette.screen
                     if let image = history.image {
                         Image(decorative: image, scale: 1).resizable().interpolation(.none)
                             .frame(width: g.size.width, height: g.size.height-traceHeight)
@@ -172,13 +202,16 @@ private struct TVSpectrumPlot: View {
                                 y: traceHeight*(1-CGFloat(min(0,max(-100,db))+100)/100))
                             if index == 0 { trace.move(to: point) } else { trace.addLine(to: point) }
                         }
-                        context.stroke(trace, with: .color(EditingTool.tv.logoAccentColor), lineWidth: 1)
+                        context.stroke(trace, with: .color(EditingTool.tv.logoAccentColor), lineWidth: 2)
                         var separator = Path(); separator.move(to: CGPoint(x: 0,y: traceHeight)); separator.addLine(to: CGPoint(x: size.width,y: traceHeight))
                         context.stroke(separator, with: .color(.white.opacity(0.3)), lineWidth: 0.5)
                     }
+                    // A single LCD face covers the waveform and history. OSD
+                    // labels are drawn above it so the small type stays legible.
+                    TVLCDSurface()
                     if history.image == nil {
                         Text(noAudio ? L("No audio track") : L("Waiting for RX samples"))
-                            .font(.caption).foregroundStyle(.white.opacity(0.55))
+                            .font(.system(size: 9,design: .monospaced)).foregroundStyle(TVInstrumentPalette.muted)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                     VStack(alignment: .leading) {
@@ -189,24 +222,59 @@ private struct TVSpectrumPlot: View {
                         Text(L("Now")); Spacer(); Text("−10 s")
                     }.font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.7))
                         .padding(3).frame(width: g.size.width, height: g.size.height-traceHeight, alignment: .trailing).offset(y: traceHeight)
-                }.clipped()
+                }.clipped().overlay(Rectangle().stroke(.black,lineWidth: 2))
+                    .overlay(Rectangle().stroke(.white.opacity(0.07),lineWidth: 0.5).padding(1))
             }
             HStack {
                 ForEach(0...4, id: \.self) { tick in
                     if tick > 0 { Spacer(minLength: 0) }
                     Text(String(format: "%+.3f", (center + (Double(tick)/4-0.5)*rate)/1e6))
                 }
-            }.font(.system(size: 9, design: .monospaced)).foregroundStyle(.black.opacity(0.65))
-            HStack(spacing: 8) {
+            }.font(.system(size: 8, design: .monospaced)).foregroundStyle(TVInstrumentPalette.muted)
+            HStack(spacing: 4) {
                 Text("−100")
                 LinearGradient(colors: [Color(red: 2/255, green: 4/255, blue: 10/255), Color(red: 15/255, green: 36/255, blue: 94/255), Color(red: 16/255, green: 150/255, blue: 181/255), Color(red: 232/255, green: 198/255, blue: 88/255), Color(red: 1, green: 1, blue: 239/255)], startPoint: .leading, endPoint: .trailing)
-                    .frame(width: 92, height: 5).border(.black.opacity(0.1))
+                    .frame(width: 54, height: 4).border(.black.opacity(0.5))
                 Text("0 dBFS/bin"); Spacer()
-                Text(L("Newest at top · 10 s history"))
-            }.font(.system(size: 8)).foregroundStyle(.black.opacity(0.55))
+                Text("↓ 10 s").help(L("Newest at top · 10 s history"))
+            }.font(.system(size: 7,design: .monospaced)).foregroundStyle(TVInstrumentPalette.muted)
         }.accessibilityElement(children: .ignore)
             .help(L("Measured after tuning / RF front-end filtering, before AGC and demodulation. Dashed line: nominal carrier. Fixed color scale; blank rows have no measurement."))
             .accessibilityLabel(L("RX spectrum / waterfall"))
             .accessibilityValue(history.image == nil ? L("Waiting for RX samples") : String(format: "%.2f s · RBW %.2f kHz", history.latestTime ?? 0, (history.spectrum?.resolutionHz ?? 0)/1000))
     }
+}
+
+/// A cached RGB subpixel mask is tiled by the compositor. No per-measurement
+/// bitmap filtering or animation is needed; multiply keeps empty rows black.
+private struct TVLCDSurface: View {
+    @Environment(\.displayScale) private var displayScale
+    var body: some View {
+        Rectangle().fill(ImagePaint(image: Image(decorative: Self.mask,scale: 2).interpolation(.none)))
+            .blendMode(.multiply)
+            .overlay {
+                Rectangle().strokeBorder(.black.opacity(0.22),lineWidth: 1 / max(1,displayScale))
+            }
+            .allowsHitTesting(false).accessibilityHidden(true)
+    }
+    private static let mask: CGImage = {
+        let width = 6, height = 6
+        let subpixels: [[UInt8]] = [[255,218,208],[208,255,218],[208,218,255]]
+        var pixels = [UInt8](repeating: 255,count: width*height*4)
+        for y in 0..<height {
+            for x in 0..<width {
+                // Paired columns form R/G/B apertures; their dim edges and
+                // the last row form the fine transistor/pixel matrix.
+                let shade = (x%2 == 1 ? 0.55 : 1) * (y == height-1 ? 0.45 : 1)
+                for channel in 0..<3 {
+                    pixels[(y*width+x)*4+channel] = UInt8(Double(subpixels[x/2][channel])*shade)
+                }
+            }
+        }
+        let provider = CGDataProvider(data: Data(pixels) as CFData)!
+        return CGImage(width: width,height: height,bitsPerComponent: 8,bitsPerPixel: 32,
+            bytesPerRow: width*4,space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,decode: nil,shouldInterpolate: false,intent: .defaultIntent)!
+    }()
 }

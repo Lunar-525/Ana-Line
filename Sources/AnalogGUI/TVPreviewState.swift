@@ -15,6 +15,8 @@ final class TVPreviewState: ObservableObject {
     @Published var processed: NSImage?
     @Published var time = 0.0
     @Published var status = ""
+    @Published var playbackRate: Float = 1
+    @Published var droppedFrames: Int64 = 0
 }
 
 /// Receiver telemetry has its own cadence; image/time updates do not redraw
@@ -33,15 +35,17 @@ final class TVReceptionState: ObservableObject {
 struct TVStatusText: View {
     @ObservedObject var state: TVPreviewState
     var body: some View {
-        Text(state.status).font(.caption).foregroundStyle(.secondary)
-            .lineLimit(1).textSelection(.enabled).help(state.status)
+        HStack(spacing: 6) {
+            Text(state.status).foregroundStyle(.secondary).lineLimit(1).textSelection(.enabled).help(state.status)
+            Text(String(format: "%.1fx",state.playbackRate))
+                .foregroundStyle(Self.isNormalSpeed(state.playbackRate) ? Color.green : .red)
+            if state.droppedFrames > 0 {
+                Text("⚠ DROP \(state.droppedFrames)").foregroundStyle(.red)
+                    .accessibilityLabel(L("Frames dropped") + " \(state.droppedFrames)")
+            }
+        }.font(.caption)
     }
-}
-
-struct TVLockText: View {
-    @ObservedObject var state: TVReceptionState
-    let model: PreviewModel
-    var body: some View { Text("\(model.terrestrialSystem.rawValue) · \(model.tvLockDescription)") }
+    static func isNormalSpeed(_ rate: Float) -> Bool { rate.isFinite && abs(rate-1) < 0.005 }
 }
 
 struct PreviewCanvasView: View {
@@ -50,11 +54,15 @@ struct PreviewCanvasView: View {
     init(model: PreviewModel) { self.model = model; tvState = model.tvPreviewState }
     var body: some View {
         ZStack {
-            Color.black.opacity(0.3)
-            if let before = model.displayOriginal, let after = model.processed {
+            if model.tool != .tv { Color.black.opacity(0.3) }
+            if model.tool == .tv && model.tvDuration <= 0 {
+                TVNoSignalView(standard: model.tvStandard,preparing: model.busy)
+            } else if let before = model.displayOriginal, let after = model.processed {
                 ComparisonView(before: before,after: after,
                     scanProgress: model.transmitting ? CGFloat(model.receivedRows)/CGFloat(model.sstvSettings.mode.height) : nil,
-                    pasteImage: { model.pasteImage() },pasteEnabled: !model.busy).padding(12)
+                    pasteImage: { model.pasteImage() },pasteEnabled: !model.busy).padding(model.tool == .tv ? 0 : 12)
+            } else if model.tool == .tv {
+                TVNoSignalView(standard: model.tvStandard,preparing: model.busy || model.rendering)
             } else {
                 VStack(spacing: 10) {
                     Image(systemName: model.tool == .tv ? "film" : "photo.badge.plus").font(.system(size: 30))

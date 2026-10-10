@@ -3,7 +3,7 @@ import CoreGraphics
 import AnalogCore
 
 public struct TVPreparationProgress: Sendable {
-    public enum Stage: Sendable { case video, audio }
+    public enum Stage: Sendable { case inspecting, video, audio, caching, cached }
     public let stage: Stage
     public let fraction: Double?
 }
@@ -27,6 +27,12 @@ public actor TVRenderer {
 
     private var ffmpeg: URL?
     private var ffprobe: URL?
+    private struct PreparedVideo: Sendable {
+        let url: URL
+        let duration: Double
+    }
+    private var preparedVideos = [TVStandard: PreparedVideo]()
+    private var cacheLease: TVMediaCache.Lease?
     private var normalizedURL: URL?
     private var audioURL: URL?
     private var audioPCM: Data?
@@ -52,18 +58,44 @@ public actor TVRenderer {
     deinit {
         // These UUID paths are owned conversion outputs, never the user's source.
         // A renderer released after playback must not leave hundreds of MB behind.
-        if let normalizedURL { try? FileManager.default.removeItem(at: normalizedURL) }
-        if let audioURL { try? FileManager.default.removeItem(at: audioURL) }
+        if cacheLease == nil {
+            for video in preparedVideos.values { try? FileManager.default.removeItem(at: video.url) }
+            if let audioURL { try? FileManager.default.removeItem(at: audioURL) }
+        }
     }
 
     public func loadVideo(_ url: URL, standard: TVStandard = .pal,
+                          cache: TVMediaCacheConfiguration? = nil,
                           progress: (@Sendable (TVPreparationProgress) -> Void)? = nil) throws -> Double {
         guard let ffmpeg = TVExecutableResolver.find("ffmpeg", path: executableSearchPath) else { throw TVVideoError.ffmpegNotFound }
+        progress?(TVPreparationProgress(stage: .inspecting,fraction: nil))
+        let identity = try url.resourceValues(forKeys: [.fileSizeKey,.contentModificationDateKey])
+        cache?.trim()
+        let key = (cache?.maximumBytes ?? 0) == 0 ? nil : try TVMediaCache.key(for: url)
+        if let cache,let key,let lease = TVMediaCache.acquire(key: key,configuration: cache) {
+            let pcm = try lease.audio.map { try Data(contentsOf: $0,options: .mappedIfSafe) }
+            try Task.checkCancellation()
+            clearPreparedVideo()
+            self.ffmpeg = ffmpeg; cacheLease = lease
+            preparedVideos = Dictionary(uniqueKeysWithValues: TVStandard.allCases.map {
+                ($0,PreparedVideo(url: lease.video($0),duration: lease.manifest.durations[$0.rawValue]!))
+            })
+            audioURL = lease.audio; audioPCM = pcm
+            progress?(TVPreparationProgress(stage: .cached,fraction: 1))
+            return try selectStandard(standard)
+        }
         guard let ffprobe = TVExecutableResolver.find("ffprobe", path: executableSearchPath) else { throw TVVideoError.ffprobeNotFound }
-        let output = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AnaLine-TV-\(UUID().uuidString).mp4")
-        let audioOutput = output.deletingPathExtension().appendingPathExtension("f32le")
-        let filter = "scale=iw*sar:ih:flags=lanczos,setsar=1,scale=\(standard.squarePixelWidth):\(standard.height):force_original_aspect_ratio=decrease:flags=lanczos,pad=\(standard.squarePixelWidth):\(standard.height):(ow-iw)/2:(oh-ih)/2:color=black,scale=\(standard.width):\(standard.height):flags=lanczos,setsar=\(standard.pixelAspect),fps=\(standard.ffmpegFrameRate)"
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("AnaLine-TV-\(UUID().uuidString)")
+        let outputs = Dictionary(uniqueKeysWithValues: TVStandard.allCases.map {
+            ($0,base.appendingPathExtension($0.rawValue).appendingPathExtension("mp4"))
+        })
+        let audioOutput = base.appendingPathExtension("f32le")
+        // Decode the source once, then scale/rate-convert both branches directly
+        // from it. NTSC is never made from a PAL conversion (or vice versa).
+        let branches = TVStandard.allCases.map { s in
+            "[\(s.rawValue)in]scale=\(s.squarePixelWidth):\(s.height):force_original_aspect_ratio=decrease:flags=lanczos,pad=\(s.squarePixelWidth):\(s.height):(ow-iw)/2:(oh-ih)/2:color=black,scale=\(s.width):\(s.height):flags=lanczos,setsar=\(s.pixelAspect),fps=\(s.ffmpegFrameRate)[\(s.rawValue)out]"
+        }
+        let filter = "[0:v:0]scale=iw*sar:ih:flags=lanczos,setsar=1,split=2[palin][ntscin];"+branches.joined(separator: ";")
         do {
             progress?(TVPreparationProgress(stage: .video,fraction: nil))
             let sourceProbe = try Self.run(ffprobe, ["-v", "error", "-show_entries", "format=duration",
@@ -72,47 +104,93 @@ public actor TVRenderer {
             let audioProbe = try Self.run(ffprobe, ["-v", "error", "-select_streams", "a:0",
                 "-show_entries", "stream=index", "-of", "csv=p=0", url.path])
             let hasAudio = !audioProbe.isEmpty
-            try Self.runPreparing(ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", url.path,
-                "-map", "0:v:0", "-vf", filter, "-an", "-c:v", "libx264", "-preset", "ultrafast",
-                "-crf", "0", "-pix_fmt", "yuv444p", "-movflags", "+faststart", output.path],
-                duration: sourceDuration,stage: .video,start: 0,weight: hasAudio ? 0.9 : 1,progress: progress)
-            let probe = try Self.run(ffprobe, ["-v", "error", "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1", output.path])
-            guard let parsedDuration = Double(String(decoding: probe, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)),
-                  parsedDuration.isFinite, parsedDuration > 0 else { throw TVVideoError.invalidVideo }
+            var arguments = ["-hide_banner","-loglevel","error","-y","-i",url.path,
+                             "-filter_complex_threads","2","-filter_complex",filter]
+            // Bound forward decoding after a seek to one second instead of
+            // x264's default ten-second GOP. This cache is for editing/playback.
+            for s in TVStandard.allCases {
+                arguments += ["-map","[\(s.rawValue)out]","-an","-c:v","libx264","-preset","ultrafast",
+                              "-threads","2","-g",String(Int(s.frameRate.rounded())),"-crf","0","-pix_fmt","yuv444p","-movflags","+faststart",outputs[s]!.path]
+            }
+            try Self.runPreparing(ffmpeg,arguments,duration: sourceDuration,stage: .video,
+                                  start: 0,weight: hasAudio ? 0.88 : 0.98,progress: progress)
+            var prepared = [TVStandard: PreparedVideo]()
+            for s in TVStandard.allCases {
+                let output = outputs[s]!
+                let probe = try Self.run(ffprobe,["-v","error","-show_entries","format=duration",
+                    "-of","default=noprint_wrappers=1:nokey=1",output.path])
+                guard let parsed = Double(String(decoding: probe,as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)),
+                      parsed.isFinite, parsed > 0 else { throw TVVideoError.invalidVideo }
+                prepared[s] = PreparedVideo(url: output,duration: parsed)
+            }
+            // Pad PCM through the longer rate-normalized endpoint. Both frame
+            // clocks index the same 48 kHz recording, without resampling on switch.
+            let audioDuration = prepared.values.map(\.duration).max()!
             if hasAudio {
                 try Self.runPreparing(ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", "-i", url.path,
                     "-map", "0:a:0", "-vn", "-c:a", "pcm_f32le", "-ar", "48000", "-ac", "1",
-                    "-af", "aresample=async=1:first_pts=0,apad", "-t", String(parsedDuration),
-                    "-f", "f32le", audioOutput.path],duration: parsedDuration,stage: .audio,
-                    start: 0.9,weight: 0.1,progress: progress)
+                    "-af", "aresample=async=1:first_pts=0,apad", "-t", String(audioDuration),
+                    "-f", "f32le", audioOutput.path],duration: audioDuration,stage: .audio,
+                    start: 0.88,weight: 0.1,progress: progress)
             }
             let pcm = hasAudio ? try Data(contentsOf: audioOutput,options: .mappedIfSafe) : nil
             try Task.checkCancellation()
-            endPlayback()
-            if let normalizedURL { try? FileManager.default.removeItem(at: normalizedURL) }
-            if let audioURL { try? FileManager.default.removeItem(at: audioURL) }
-            self.ffmpeg = ffmpeg; self.ffprobe = ffprobe; normalizedURL = output
-            audioURL = hasAudio ? audioOutput : nil
+            progress?(TVPreparationProgress(stage: .caching,fraction: 0.98))
+            let unchanged = try url.resourceValues(forKeys: [.fileSizeKey,.contentModificationDateKey])
+            let lease: TVMediaCache.Lease?
+            if let cache,let key,unchanged.fileSize == identity.fileSize,
+               unchanged.contentModificationDate == identity.contentModificationDate {
+                lease = TVMediaCache.store(key: key,videos: outputs,durations: prepared.mapValues(\.duration),
+                    audio: hasAudio ? audioOutput : nil,configuration: cache)
+            } else { lease = nil }
+            clearPreparedVideo()
+            cacheLease = lease
+            if let lease {
+                for s in TVStandard.allCases {
+                    prepared[s] = PreparedVideo(url: lease.video(s),duration: lease.manifest.durations[s.rawValue]!)
+                }
+                for output in outputs.values { try? FileManager.default.removeItem(at: output) }
+                try? FileManager.default.removeItem(at: audioOutput)
+            }
+            self.ffmpeg = ffmpeg; self.ffprobe = ffprobe; preparedVideos = prepared
+            audioURL = lease?.audio ?? (hasAudio ? audioOutput : nil)
             audioPCM = pcm
-            self.standard = standard; duration = parsedDuration
-            terrestrial = TerrestrialEngine(system: TerrestrialSystem(video: standard))
-            simulationFrame = nil
+            let selectedDuration = try selectStandard(standard)
             progress?(TVPreparationProgress(stage: hasAudio ? .audio : .video,fraction: 1))
-            return parsedDuration
+            return selectedDuration
         } catch {
-            try? FileManager.default.removeItem(at: output)
+            for output in outputs.values { try? FileManager.default.removeItem(at: output) }
             try? FileManager.default.removeItem(at: audioOutput)
             throw error
         }
     }
 
     public func unloadVideo() {
+        clearPreparedVideo()
+    }
+    private func clearPreparedVideo() {
         endPlayback()
-        if let normalizedURL { try? FileManager.default.removeItem(at: normalizedURL) }
-        if let audioURL { try? FileManager.default.removeItem(at: audioURL) }
+        if cacheLease == nil {
+            for video in preparedVideos.values { try? FileManager.default.removeItem(at: video.url) }
+            if let audioURL { try? FileManager.default.removeItem(at: audioURL) }
+        }
+        cacheLease = nil
+        preparedVideos.removeAll()
         normalizedURL = nil; audioURL = nil; audioPCM = nil; duration = 0
     }
+
+    /// Switches only existing import outputs. No source access or transcoding.
+    @discardableResult
+    public func selectStandard(_ standard: TVStandard) throws -> Double {
+        guard let video = preparedVideos[standard] else { throw TVVideoError.noVideo }
+        endPlayback()
+        self.standard = standard; normalizedURL = video.url; duration = video.duration
+        terrestrial = TerrestrialEngine(system: TerrestrialSystem(video: standard))
+        return duration
+    }
+
+    // Internal diagnostics used to verify cache reuse and lifetime cleanup.
+    func normalizedVideoURL(standard: TVStandard) -> URL? { preparedVideos[standard]?.url }
 
     /// Scratch mono float32 little-endian PCM at 48 kHz, not a playable media container.
     public func normalizedAudioURL() -> URL? { audioURL }
@@ -132,14 +210,14 @@ public actor TVRenderer {
 
     public func endPlayback() { reader?.close(); reader = nil; simulationFrame = nil }
 
-    public func render(time: Double, channel settings: TerrestrialSettings? = nil) throws -> Preview {
+    public func render(time: Double, channel settings: TerrestrialSettings? = nil,settleAfterSeek: Bool = true) throws -> Preview {
         try Task.checkCancellation()
-        let result = try frameQueue.sync { try renderFrame(time: time,channel: settings) }
+        let result = try frameQueue.sync { try renderFrame(time: time,channel: settings,settleAfterSeek: settleAfterSeek) }
         try Task.checkCancellation()
         return result
     }
 
-    private func renderFrame(time: Double,channel settings: TerrestrialSettings?) throws -> Preview {
+    private func renderFrame(time: Double,channel settings: TerrestrialSettings?,settleAfterSeek: Bool) throws -> Preview {
         let started = ContinuousClock.now
         try Task.checkCancellation()
         let settings = settings ?? TerrestrialSettings(system: TerrestrialSystem(video: standard))
@@ -195,7 +273,7 @@ public actor TVRenderer {
             terrestrial = TerrestrialEngine(system: TerrestrialSystem(video: standard), seed: settings.seed)
             // Seek acquisition uses two frozen-picture pre-roll frames. This settles
             // carrier/AGC loops before a paused preview, without inventing RF lock.
-            for prior in [max(0, frameIndex-2), max(0, frameIndex-1)] {
+            for prior in settleAfterSeek ? [max(0, frameIndex-2), max(0, frameIndex-1)] : [] {
                 try Task.checkCancellation()
                 let signal = try TVEngine.encode(frame,frameIndex: prior,execution: settings.execution,damage: settings.transmitter.encoder)
                 let pcm = sourceAudio(frame: prior)
@@ -235,12 +313,14 @@ public actor TVRenderer {
     private static func runPreparing(_ executable: URL, _ arguments: [String], duration: Double?,
                                      stage: TVPreparationProgress.Stage, start: Double, weight: Double,
                                      progress: (@Sendable (TVPreparationProgress) -> Void)?) throws {
-        let process = try TVFFmpegProcess(executable,["-nostats","-progress","pipe:1"]+arguments)
+        let process = try TVFFmpegProcess(executable,["-nostats","-stats_period","0.1","-progress","pipe:1"]+arguments)
         defer { process.close() }
         let duration = duration.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         progress?(TVPreparationProgress(stage: stage,fraction: duration == nil ? nil : start))
         var pending = Data(), last = start
-        while let data = try process.output.read(upToCount: 4096), !data.isEmpty {
+        while true {
+            let data = process.output.availableData
+            if data.isEmpty { break }
             try Task.checkCancellation()
             pending.append(data)
             while let end = pending.firstIndex(of: 10) {

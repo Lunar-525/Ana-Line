@@ -49,7 +49,7 @@ enum TVWeatherElement: String, CaseIterable, Identifiable {
         case .fog: "Fog liquid water · g/m³"
         case .temperature: "Air temperature · °C"
         case .humidity: "Relative humidity · %"
-        case .lightning: "Lightning activity"
+        case .lightning: "Lightning intensity"
         case .ionization: "Ionospheric remote interference"
         case .clutter: "Weather clutter"
         case .sunlight: "Sunlight"
@@ -65,6 +65,7 @@ enum TVWeatherElement: String, CaseIterable, Identifiable {
         case .fog: return String(format: "%.2f g/m³",v)
         case .temperature: return String(format: "%.0f °C",v)
         case .humidity: return String(format: "%.0f%%",v)
+        case .lightning: return String(format: "%.0f%% · %.0f /min",v*100,weather.lightningRatePerMinute)
         default: return String(format: "%.0f%%",v*100)
         }
     }
@@ -76,38 +77,12 @@ enum TVWeatherElement: String, CaseIterable, Identifiable {
     }
     func reset(_ weather: inout TVWeatherSettings) {
         weather[keyPath: keyPath] = TVWeatherSettings()[keyPath: keyPath]
+        if self == .lightning { weather.lightningRatePerMinute = TVWeatherSettings().lightningRatePerMinute }
     }
-}
-
-struct TVWeatherScene: View {
-    @Binding var weather: TVWeatherSettings
-    var sceneEnabled = true
-    private var elements: [TVWeatherElement] { TVWeatherElement.allCases.filter { $0 != .sunlight } }
-    var body: some View {
-        VStack(spacing: 3) {
-            HStack {
-                Text(L("Weather / atmosphere")).fontWeight(.medium)
-                Spacer()
-                Text(L("Drag sky elements ↑↓ · double-click to reset"))
-                    .foregroundStyle(.black.opacity(0.5))
-            }.font(.system(size: 10)).padding(.bottom, 3)
-            GeometryReader { proxy in
-                ZStack(alignment: .topLeading) {
-                    Rectangle().fill(LinearGradient(colors: [
-                        EditingTool.tv.logoAccentColor.opacity(weather.enabled ? Double(weather.sunlight)*0.12 : 0.015),
-                        Color(white: 0.98)
-                    ], startPoint: .topLeading,endPoint: .bottomTrailing))
-                    ForEach(Array(elements.enumerated()),id: \.element) { index, element in
-                        TVWeatherSkyElement(element: element,weather: $weather,sceneEnabled: sceneEnabled)
-                            .frame(width: proxy.size.width/4,height: proxy.size.height/2)
-                            .position(x: (CGFloat(index%4)+0.5)*proxy.size.width/4,
-                                      y: (index < 4 ? 0.25 : 0.75)*proxy.size.height)
-                    }
-                }
-            }
-        }.padding(.bottom, 6)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(L("Weather / atmosphere"))
+    static func adjustLightning(_ weather: inout TVWeatherSettings,from intensity: Float,rate: Float,translation: CGSize) {
+        guard intensity.isFinite,rate.isFinite,translation.width.isFinite,translation.height.isFinite else { return }
+        TVWeatherElement.lightning.adjust(&weather,from: intensity,translation: translation.height)
+        weather.lightningRatePerMinute = min(120,max(0,rate+Float(translation.width/100)*120))
     }
 }
 
@@ -115,32 +90,71 @@ struct TVWeatherSkyElement: View {
     let element: TVWeatherElement
     @Binding var weather: TVWeatherSettings
     var sceneEnabled = true
+    var compact = false
     @State private var dragStart: Float?
+    @State private var dragRateStart: Float?
+    @State private var horizontalDrag = false
     @State private var hovering = false
+    @State private var editing = false
     var body: some View {
         VStack(spacing: 2) {
             Group {
-                if element == .rain || element == .lightning {
+                if !compact && element == .rain {
                     TVWeatherAnimatedGlyph(element: element,weather: weather,sceneEnabled: sceneEnabled)
                 } else {
-                    TVWeatherGlyph(element: element,strength: element.strength(weather))
+                    TVWeatherGlyph(element: element,strength: element.strength(weather),lightningRate: Double(weather.lightningRatePerMinute))
                 }
             }.frame(width: 70,height: 43)
-            Text(L(element.label)).font(.system(size: 10,weight: .medium)).lineLimit(1)
+                .scaleEffect(compact ? 0.72 : 1)
+                .frame(width: compact ? 50 : 70,height: compact ? 31 : 43)
+            if !compact { Text(L(element.label)).font(.system(size: 10,weight: .medium)).lineLimit(1) }
             Text(element.readout(weather)).font(.system(size: 9).monospacedDigit())
-                .foregroundStyle(.black.opacity(0.55))
+                .foregroundStyle(TVPropagationPalette.muted)
+                .opacity(!compact || hovering || dragStart != nil ? 1 : 0)
         }.frame(maxWidth: .infinity,maxHeight: .infinity)
             .opacity(weather.enabled ? 1 : 0.4)
-            .background(Rectangle().fill(.black.opacity(hovering ? 0.035 : 0)))
+            .background(Rectangle().fill(TVPropagationPalette.ink.opacity(hovering ? 0.05 : 0)))
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
             .gesture(DragGesture(minimumDistance: 2)
                 .onChanged { value in
-                    if dragStart == nil { dragStart = weather[keyPath: element.keyPath] }
-                    element.adjust(&weather,from: dragStart!,translation: value.translation.height)
-                }.onEnded { _ in dragStart = nil })
+                    if dragStart == nil {
+                        dragStart = weather[keyPath: element.keyPath]
+                        dragRateStart = weather.lightningRatePerMinute
+                        horizontalDrag = abs(value.translation.width) > abs(value.translation.height)
+                    }
+                    if element == .lightning {
+                        TVWeatherElement.adjustLightning(&weather,from: dragStart!,rate: dragRateStart!,translation:
+                            CGSize(width: horizontalDrag ? value.translation.width : 0,height: horizontalDrag ? 0 : value.translation.height))
+                    } else { element.adjust(&weather,from: dragStart!,translation: value.translation.height) }
+                }.onEnded { _ in dragStart = nil; dragRateStart = nil })
             .onTapGesture(count: 2) { element.reset(&weather) }
-            .help("\(L(element.detail))\n\(L("Drag up to increase · down to decrease · double-click to reset"))")
+            .contextMenu {
+                Button(L("Edit values")) { editing = true }
+                Button(L("Reset")) { element.reset(&weather) }
+                if ![TVWeatherElement.sunlight,.temperature,.humidity].contains(element) {
+                    Button(L("Remove weather element")) { weather[keyPath: element.keyPath] = 0 }
+                }
+                Toggle(L("Enable weather"),isOn: $weather.enabled)
+            }
+            .popover(isPresented: $editing) {
+                VStack(spacing: 12) {
+                    if element == .lightning {
+                        TVSceneValueField(name: "Lightning intensity",unit: "%",value: Binding(
+                            get: { weather.lightning*100 },set: { weather.lightning = $0/100; weather.enabled = true }),range: 0...100)
+                        TVSceneValueField(name: "Lightning rate · strikes/min",unit: "/min",value: Binding(
+                            get: { weather.lightningRatePerMinute },set: { weather.lightningRatePerMinute = $0; weather.enabled = true }),range: 0...120)
+                        Text(L("Average random rate · vertical drag: intensity · horizontal drag: frequency"))
+                            .font(.system(size: 10)).foregroundStyle(TVPropagationPalette.muted)
+                    } else {
+                        TVSceneValueField(name: element.detail,unit: "",value: Binding(
+                            get: { weather[keyPath: element.keyPath] },
+                            set: { weather[keyPath: element.keyPath] = $0; weather.enabled = true }),range: element.range)
+                    }
+                }.padding(14).frame(width: 290).foregroundStyle(TVPropagationPalette.ink).environment(\.colorScheme,.dark)
+            }
+            .help(element == .lightning ? "\(element.readout(weather))\n\(L("Average random rate · vertical drag: intensity · horizontal drag: frequency"))" :
+                "\(L(element.detail))\n\(L("Drag up to increase · down to decrease · double-click to reset"))")
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(L(element.detail))
             .accessibilityValue("\(element.readout(weather)) · \(weather.enabled ? L("Enable weather") : L("Weather bypassed"))")
@@ -149,6 +163,18 @@ struct TVWeatherSkyElement: View {
                                translation: direction == .increment ? -5 : 5)
             }
             .accessibilityAction(named: Text(L("Reset"))) { element.reset(&weather) }
+            .accessibilityActions {
+                if element == .lightning {
+                    Button(L("Increase lightning frequency")) {
+                        TVWeatherElement.adjustLightning(&weather,from: weather.lightning,rate: weather.lightningRatePerMinute,
+                            translation: CGSize(width: 5,height: 0))
+                    }
+                    Button(L("Decrease lightning frequency")) {
+                        TVWeatherElement.adjustLightning(&weather,from: weather.lightning,rate: weather.lightningRatePerMinute,
+                            translation: CGSize(width: -5,height: 0))
+                    }
+                }
+            }
     }
 }
 
@@ -156,10 +182,11 @@ private struct TVWeatherGlyph: View {
     let element: TVWeatherElement
     let strength: Double
     var seconds: Double? = nil
+    var lightningRate: Double = 30
     var body: some View {
         Canvas { context,size in
-            let t = min(1,max(0,strength)), ink = Color.black.opacity(0.75)
-            let accent = EditingTool.tv.logoAccentColor
+            let t = min(1,max(0,strength)), ink = TVPropagationPalette.ink.opacity(0.85)
+            let accent = TVPropagationPalette.accent
             func line(_ points: [CGPoint],color: Color = ink,width: Double = 1) {
                 var p = Path(); p.addLines(points)
                 context.stroke(p,with: .color(color),lineWidth: width)
@@ -180,7 +207,7 @@ private struct TVWeatherGlyph: View {
                           CGPoint(x: centre.x+cos(a)*end,y: centre.y+sin(a)*end)],color: ink.opacity(0.2+t*0.8))
                 }
             case .temperature:
-                let color = Color(red: 0.25+t*0.55,green: 0.45-t*0.2,blue: 0.8-t*0.6)
+                let color = Color(red: 0.4+t*0.5,green: 0.68-t*0.21,blue: 0.8-t*0.43)
                 var tube = Path(roundedRect: CGRect(x: 30,y: 2,width: 10,height: 28),cornerRadius: 5)
                 tube.addEllipse(in: CGRect(x: 27,y: 26,width: 16,height: 16))
                 context.fill(Path(CGRect(x: 33,y: 29-t*24,width: 4,height: t*24)),with: .color(color))
@@ -195,7 +222,7 @@ private struct TVWeatherGlyph: View {
                 drop.addCurve(to: CGPoint(x: 48,y: 29),control1: CGPoint(x: 22,y: 45),control2: CGPoint(x: 48,y: 45))
                 drop.addCurve(to: CGPoint(x: 35,y: 1),control1: CGPoint(x: 48,y: 18),control2: CGPoint(x: 37,y: 12))
                 var fill = context; fill.clip(to: drop)
-                fill.fill(Path(CGRect(x: 20,y: 41-t*40,width: 30,height: t*40)),with: .color(Color.blue.opacity(0.22)))
+                fill.fill(Path(CGRect(x: 20,y: 41-t*40,width: 30,height: t*40)),with: .color(TVPropagationPalette.reflection.opacity(0.25+t*0.3)))
                 context.stroke(drop,with: .color(ink),lineWidth: 1)
             case .rain, .snow:
                 symbol("cloud",at: CGPoint(x: 35,y: 14),size: 31)
@@ -222,11 +249,12 @@ private struct TVWeatherGlyph: View {
                 }
             case .lightning:
                 symbol("cloud",at: CGPoint(x: 35,y: 13),size: 31)
-                let flash = seconds.map { TVWeatherMotion.lightning(seconds: $0,activity: t).opacity } ?? t
-                for n in 0..<3 {
-                    let x = 19+Double(n)*15
+                let flash = t
+                let bolts = lightningRate > 0 ? max(1,Int(ceil(lightningRate/40))) : 0
+                for n in 0..<bolts {
+                    let x = 35+(Double(n)-Double(bolts-1)/2)*15
                     line([CGPoint(x: x+3,y: 25),CGPoint(x: x-2,y: 32),CGPoint(x: x+3,y: 32),CGPoint(x: x-1,y: 41)],
-                         color: n == 1 ? accent.opacity(0.15+flash*0.85) : ink.opacity(flash*0.7),width: 1+t)
+                         color: accent.opacity(0.15+flash*0.85),width: 0.6+t*1.4)
                 }
             case .ionization, .clutter:
                 for n in 0..<3 {
@@ -262,7 +290,7 @@ private struct TVWeatherAnimatedGlyph: View {
 }
 
 /// Analytic motion needs no particle state, timer tasks, random allocations or
-/// configuration writes. The RF engine keeps its own physical impulse timeline.
+/// configuration writes. Lightning is drawn separately from presented RF events.
 enum TVWeatherMotion {
     static func wrap(_ value: Double,period: Double) -> Double {
         value-floor(value/period)*period
@@ -273,18 +301,10 @@ enum TVWeatherMotion {
         let x = wrap(Double((index*71+31)%997)/997*Double(size.width)-y*0.16,period: max(1,Double(size.width)))
         return CGPoint(x: x,y: 24+y)
     }
-    static func lightning(seconds: Double,activity: Double) -> (event: Int,opacity: Double) {
-        let t = min(1,max(0,activity))
-        guard t > 0 else { return (0,0) }
-        let period = 7-4.5*t, event = Int(floor(seconds/period))
-        let age = wrap(seconds,period: period)
-        // Short strokes brighten the bolt itself rather than flashing the panel.
-        let attack = min(1,age/0.04)
-        return (event,age < 0.32 ? attack*exp(-age*9)*(0.5+t*0.5) : 0)
-    }
+
 }
 
-/// Only this small canvas ticks at 24 Hz; terrain, controls and the RF pipeline
+/// Only this small canvas ticks at 12 Hz; terrain, controls and the RF pipeline
 /// observe configuration as before. Zero/disabled weather has no active clock.
 struct TVWeatherAtmosphere: View {
     let weather: TVWeatherSettings
@@ -292,43 +312,28 @@ struct TVWeatherAtmosphere: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var visible = false
     var body: some View {
-        let moving = sceneEnabled && weather.enabled && (weather.rainMMHour > 0 || weather.lightning > 0)
-        TimelineView(.animation(minimumInterval: 1/24,paused: !moving || !visible || reduceMotion)) { tick in
+        let moving = sceneEnabled && weather.enabled && weather.rainMMHour > 0
+        TimelineView(.animation(minimumInterval: 1/12,paused: !moving || !visible || reduceMotion)) { tick in
             drawing(seconds: moving && !reduceMotion ? tick.date.timeIntervalSinceReferenceDate : nil)
         }.onAppear { visible = true }.onDisappear { visible = false }
     }
     private func drawing(seconds: Double?) -> some View {
-        Canvas { context,size in
+        Canvas(rendersAsynchronously: true) { context,size in
             guard sceneEnabled && weather.enabled else { return }
             let w = Double(size.width), h = Double(size.height)-26
             let fog = Double(weather.fogGramsM3)*2, humid = Double(weather.humidityPercent)/100
             context.fill(Path(CGRect(x: 0,y: 22,width: w,height: h-22)),
-                         with: .linearGradient(Gradient(colors: [.clear,Color(white: 0.72).opacity(fog*0.35+humid*0.04)]),
+                         with: .linearGradient(Gradient(colors: [.clear,TVPropagationPalette.muted.opacity(fog*0.14+humid*0.025)]),
                                                startPoint: CGPoint(x: 0,y: 22),endPoint: CGPoint(x: 0,y: h)))
             for n in 0..<Int(ceil(Double(weather.rainMMHour)/120*90)) {
                 let point = TVWeatherMotion.rainPosition(index: n,seconds: seconds ?? 0,size: size,
                                                         strength: Double(weather.rainMMHour)/120)
                 var p = Path(); p.move(to: point); p.addLine(to: CGPoint(x: point.x-2,y: point.y+9))
-                context.stroke(p,with: .color(.black.opacity(0.16)),lineWidth: 0.7)
+                context.stroke(p,with: .color(TVPropagationPalette.rain.opacity(0.35)),lineWidth: 0.7)
             }
             for n in 0..<Int(weather.snowMMHour/20*65) {
                 let x = Double((n*79+17)%997)/997*w, y = 24+Double((n*53)%541)/541*max(1,h-38)
-                context.fill(Path(ellipseIn: CGRect(x: x,y: y,width: 2.5,height: 2.5)),with: .color(.gray.opacity(0.45)))
-            }
-            let flash = seconds.map { TVWeatherMotion.lightning(seconds: $0,activity: Double(weather.lightning)) }
-                ?? (event: 0,opacity: Double(weather.lightning)*0.45)
-            if flash.opacity > 0 {
-                let x = w*(0.3+Double((flash.event*37)%43)/100)
-                var bolt = Path(); bolt.addLines([
-                    CGPoint(x: x,y: 26),CGPoint(x: x-13,y: h*0.3),
-                    CGPoint(x: x+3,y: h*0.3-3),CGPoint(x: x-18,y: h*0.61),
-                    CGPoint(x: x-6,y: h*0.59),CGPoint(x: x-27,y: h-5)
-                ])
-                context.stroke(bolt,with: .color(EditingTool.tv.logoAccentColor.opacity(flash.opacity*0.3)),lineWidth: 6)
-                context.stroke(bolt,with: .color(.black.opacity(flash.opacity*0.65)),lineWidth: 1.3)
-                var branch = Path(); branch.addLines([CGPoint(x: x-18,y: h*0.61),
-                    CGPoint(x: x-33,y: h*0.65),CGPoint(x: x-44,y: h*0.85)])
-                context.stroke(branch,with: .color(.black.opacity(flash.opacity*0.35)),lineWidth: 0.7)
+                context.fill(Path(ellipseIn: CGRect(x: x,y: y,width: 2.5,height: 2.5)),with: .color(TVPropagationPalette.ink.opacity(0.45)))
             }
         }
     }

@@ -85,7 +85,9 @@ struct TVPowerAmplifierRack: View {
             TVTXMeters(state: instruments)
             HStack(spacing: 8) {
                 TVRackSwitch(enabled: $state.tvChannel.transmitter.enabled,label: "PA nonlinearity")
-                TVRotaryParameter(name: "Transmit power · dB",value: $state.tvChannel.transmitter.powerDB,
+                TVRotaryParameter(name: "Carrier · MHz",value: $state.tvChannel.propagation.frequencyMHz,
+                    range: 50...860,initial: 600,step: 1,unit: "MHz",digits: 0)
+                TVRotaryParameter(name: "TX power · dB",value: $state.tvChannel.transmitter.powerDB,
                     range: -60...12,initial: 0,step: 0.1,unit: "dB")
                     .help(L("Nominal transmit power relative to the 0 dB reference, before PA compression. Applies to vision and sound; meters show actual output."))
                 TVRotaryParameter(name: "PA backoff · dB",value: $state.tvChannel.transmitter.backoffDB,

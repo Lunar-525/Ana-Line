@@ -10,5 +10,19 @@
 <key>CFBundleVersion</key><string>__BUILD_ID__</string>
 <key>AnaLineBuildTime</key><string>__BUILD_TIME__</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>CFBundleDocumentTypes</key><array><dict>
+<key>CFBundleTypeName</key><string>AnaLine Terrestrial Session</string>
+<key>CFBundleTypeRole</key><string>Editor</string>
+<key>LSHandlerRank</key><string>Owner</string>
+<key>LSItemContentTypes</key><array><string>local.analine.session</string></array>
+</dict></array>
+<key>UTExportedTypeDeclarations</key><array><dict>
+<key>UTTypeIdentifier</key><string>local.analine.session</string>
+<key>UTTypeDescription</key><string>AnaLine Terrestrial Session</string>
+<key>UTTypeConformsTo</key><array><string>public.json</string></array>
+<key>UTTypeTagSpecification</key><dict>
+<key>public.filename-extension</key><array><string>analine</string></array>
+</dict>
+</dict></array>
 <key>NSMicrophoneUsageDescription</key><string>将你的麦克风声音实时混入 SSTV 接收信号，创造图像失真。声音仅在本机内存中处理。</string>
 </dict></plist>

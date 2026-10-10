@@ -12,6 +12,7 @@ final class PreviewModel: ObservableObject {
     @Published var original: NSImage?
     @Published private var stillProcessed: NSImage?
     let tvPreviewState = TVPreviewState()
+    let tvLightningState = TVLightningState()
     let tvReceptionState = TVReceptionState()
     let tvTXInstrumentState = TVTXInstrumentState()
     private var tvTelemetryBucket: Int?
@@ -54,7 +55,7 @@ final class PreviewModel: ObservableObject {
         if oldValue != tvStandard {
             if tvControlState.tvStandard != tvStandard { tvControlState.tvStandard = tvStandard }
             tvChannel.rfBandwidthMHz = TerrestrialSystem(video: tvStandard).channelMHz
-            reloadTVVideo()
+            selectTVStandard()
         }
     } }
     private(set) var tvLock: TelevisionLock {
@@ -92,6 +93,9 @@ final class PreviewModel: ObservableObject {
         }
     }
     private var tvSourceURL: URL?
+    @Published var sessionURL: URL?
+    private var restoringSession = false
+    private var queuedSessionURL: URL?
     private let tvAudio = TVAudioOutput()
     var tvAudioMediaSeconds: Double { tvAudio.mediaSeconds }
     var tvAudioConsumedSamples: Int64 { tvAudio.consumedSamples }
@@ -146,6 +150,10 @@ final class PreviewModel: ObservableObject {
     let tvControlState = TVControlState()
     @Published var busy = false { didSet {
         if tvControlState.busy != busy { tvControlState.busy = busy }
+        if !busy, let next = queuedSessionURL {
+            queuedSessionURL = nil
+            Task { openSession(next) }
+        }
     } }
     @Published var rendering = false
     @Published var library: LUTLibrary?
@@ -174,6 +182,8 @@ final class PreviewModel: ObservableObject {
     private var renderRun = 0
     private var renderTask: Task<Void,Never>?
     var started = false
+    let tvPreferences: TVPreferences
+    init(tvPreferences: TVPreferences = .shared) { self.tvPreferences = tvPreferences }
     var imageDescription = ""
     var collections: [String] { Array(Set(library?.presets.map(\.collection) ?? [])).sorted() }
     var visiblePresets: [LUTPreset] {
@@ -188,7 +198,8 @@ final class PreviewModel: ObservableObject {
         renderTask?.cancel(); renderTask = nil; renderRun += 1
         updateSelection()
     }
-    func updateSelection() {
+    func updateSelection(immediate: Bool = false) {
+        guard !restoringSession else { return }
         request += 1
         if tool == .tv {
             guard !busy, !tvPlaying else { return }
@@ -206,7 +217,7 @@ final class PreviewModel: ObservableObject {
             renderTask = Task {
                 do {
                     // Coalesce rapid slider changes before starting the CPU-heavy CVBS pass.
-                    try await Task.sleep(for: .milliseconds(90))
+                    if !immediate { try await Task.sleep(for: .milliseconds(90)) }
                     let result = try await tvRenderer.render(time: time, channel: channel)
                     guard run == renderRun, !Task.isCancelled else { return }
                     presentTVPreview(result)
@@ -275,28 +286,123 @@ final class PreviewModel: ObservableObject {
         panel.canChooseDirectories = false
         if panel.runModal() == .OK, let url = panel.url { load(url) }
     }
-    private func reloadTVVideo() {
-        guard tool == .tv, let url = tvSourceURL, !busy else { return }
+    func chooseSession() {
+        guard !busy else { return }
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.anaLineSession]
+        panel.canChooseDirectories = false
+        if panel.runModal() == .OK,let url = panel.url { openSession(url) }
+    }
+    func sessionSnapshot(at url: URL) -> TVSessionDocument {
+        TVSessionDocument(video: tvSourceURL.map { .init(video: $0,session: url) },
+            standard: tvStandard,channel: tvChannel,position: tvTime,muted: tvMuted,
+            bypassedEchoGain: tvControlState.bypassedSceneEchoGain)
+    }
+    func writeSession(to url: URL) throws {
+        guard !busy else { throw TVSessionDocument.SessionError.busy }
+        try sessionSnapshot(at: url).write(to: url)
+        sessionURL = url
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+    }
+    func saveSession(asNew: Bool = false) {
+        guard tool == .tv,!busy else { return }
+        var destination = asNew ? nil : sessionURL
+        if destination == nil {
+            let panel = NSSavePanel(); panel.allowedContentTypes = [.anaLineSession]
+            panel.nameFieldStringValue = sessionURL?.lastPathComponent ?? "Terrestrial.analine"
+            if panel.runModal() == .OK { destination = panel.url } else { return }
+        }
+        do { try writeSession(to: destination!) }
+        catch { sessionFailure(error) }
+    }
+    private func sessionFailure(_ error: Error) {
+        let alert = NSAlert(); alert.messageText = L("Could not open or save session")
+        alert.informativeText = error.localizedDescription; alert.alertStyle = .warning
+        alert.runModal()
+    }
+    func openSession(_ url: URL) {
+        if busy { queuedSessionURL = url; return }
+        // Decode and resolve the media before changing the active settings.
+        do {
+            let document = try TVSessionDocument.read(from: url)
+            var video = document.video?.resolve(relativeTo: url)
+            if let reference = document.video,video == nil {
+                let alert = NSAlert(); alert.messageText = L("Locate missing video")
+                alert.informativeText = L("Video not found:") + " " + reference.name
+                alert.addButton(withTitle: L("Locate Video…")); alert.addButton(withTitle: L("Cancel"))
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+                let panel = NSOpenPanel(); panel.canChooseDirectories = false
+                panel.message = L("Select the original video or its replacement.")
+                guard panel.runModal() == .OK,let replacement = panel.url else { return }
+                video = replacement
+            }
+            let resolved = video
+            Task {
+                do {
+                    try await restoreSession(document,at: url,video: resolved)
+                    NSDocumentController.shared.noteNewRecentDocumentURL(url)
+                } catch { sessionFailure(error) }
+            }
+        } catch { sessionFailure(error) }
+    }
+    func restoreSession(_ document: TVSessionDocument,at url: URL,video: URL?) async throws {
+        try document.validate()
+        guard !busy else { throw TVSessionDocument.SessionError.busy }
+        if let reference = document.video,video == nil { throw TVSessionDocument.SessionError.missingVideo(reference.name) }
+        pauseTVPlayback(); stopTransmission(); tvResumeAfterScrub = false
+        renderTask?.cancel(); renderTask = nil; renderRun += 1; rendering = false
+        restoringSession = true; busy = true
+        defer { restoringSession = false; busy = false }
+        // FFmpeg caches are rebuilt, never embedded in the small session file.
+        let duration: Double
+        if let video { duration = try await prepareTVVideo(video,standard: document.standard) }
+        else { await tvRenderer.unloadVideo(); duration = 0 }
+        tool = .tv; tvStandard = document.standard; tvChannel = document.channel
+        tvControlState.restoreSceneEcho(document.bypassedEchoGain)
+        tvSourceURL = video; tvDuration = duration; tvMuted = document.muted
+        tvHasAudio = video != nil ? await tvRenderer.hasAudioTrack() : false
+        let limit = max(0,duration-tvStandard.frameDuration)
+        tvTime = floor(min(limit,document.position)*tvStandard.frameRate+1e-7)/tvStandard.frameRate
+        tvOriginal = nil; processed = nil
+        tvPreviewState.droppedFrames = 0; tvPreviewState.playbackRate = 1
+        imageDescription = video?.lastPathComponent ?? ""
+        tvVisionSpectrum.reset(); tvSoundSpectrum.reset(); tvLightningState.reset()
+        tvTXInstrumentState.reading = nil; tvSynchronization = TelevisionSynchronization()
+        tvLock = .searching; tvAGCDB = 0; tvCarrierErrorHz = 0; tvSyncConfidence = 0; tvRecoveredLines = 0
+        sessionURL = url
+        restoringSession = false; busy = false
+        updateSelection(immediate: true)
+    }
+    private func selectTVStandard() {
+        guard tool == .tv, tvSourceURL != nil, !tvPreparing, !restoringSession else { return }
         pauseTVPlayback()
         renderTask?.cancel(); renderTask = nil; renderRun += 1
-        busy = true; status = L("Preparing video with FFmpeg…")
+        let run = renderRun, standard = tvStandard
+        busy = true
+        tvVisionSpectrum.reset(); tvSoundSpectrum.reset(); tvLightningState.reset()
+        tvTXInstrumentState.reading = nil
+        tvSynchronization = TelevisionSynchronization()
         Task {
             do {
-                let duration = try await prepareTVVideo(url)
-                tvDuration = duration; tvTime = min(tvTime, max(0, duration - 1 / tvStandard.frameRate))
-                tvHasAudio = await tvRenderer.hasAudioTrack()
-                busy = false; updateSelection()
-            } catch { busy = false; status = L("TV frame processing failed:") + " \(error.localizedDescription)" }
+                let duration = try await tvRenderer.selectStandard(standard)
+                guard run == renderRun else { return }
+                tvDuration = duration
+                let lastFrame = floor(max(0,duration-standard.frameDuration)*standard.frameRate+1e-7)
+                tvTime = min(lastFrame,max(0,(tvTime*standard.frameRate).rounded()))/standard.frameRate
+                busy = false; updateSelection(immediate: true)
+            } catch {
+                guard run == renderRun else { return }
+                busy = false; status = L("TV frame processing failed:") + " \(error.localizedDescription)"
+            }
         }
     }
 
-    private func prepareTVVideo(_ url: URL) async throws -> Double {
-        tvVisionSpectrum.reset(); tvSoundSpectrum.reset()
+    private func prepareTVVideo(_ url: URL,standard: TVStandard? = nil) async throws -> Double {
+        tvVisionSpectrum.reset(); tvSoundSpectrum.reset(); tvLightningState.reset()
         tvTXInstrumentState.reading = nil
         tvSynchronization = TelevisionSynchronization()
         tvPreparing = true; tvPreparationProgress = nil; tvPreparationStage = .video
         defer { tvPreparing = false; tvPreparationProgress = nil }
-        return try await tvRenderer.loadVideo(url,standard: tvStandard) { [weak self] progress in
+        return try await tvRenderer.loadVideo(url,standard: standard ?? tvStandard,cache: tvPreferences.configuration) { [weak self] progress in
             Task { @MainActor [weak self] in
                 guard let self, self.tvPreparing else { return }
                 self.tvPreparationStage = progress.stage
@@ -309,6 +415,7 @@ final class PreviewModel: ObservableObject {
         tvOriginal = NSImage(cgImage: result.original, size: NSSize(width: tvStandard.squarePixelWidth, height: tvStandard.height))
         processed = NSImage(cgImage: result.image, size: NSSize(width: tvStandard.squarePixelWidth, height: tvStandard.height))
         tvTime = Double(result.frameIndex) / tvStandard.frameRate
+        tvLightningState.present(events: result.reception.lightningEvents,time: tvTime)
         let bucket = Int(floor(tvTime*10+1e-7))
         // Waterfall buckets are 100 ms. Keep image/transport at the source frame
         // rate, but update telemetry and spectrum together at that bucket cadence.
@@ -323,9 +430,9 @@ final class PreviewModel: ObservableObject {
         tvSyncConfidence = result.reception.syncConfidence
         tvRecoveredLines = result.reception.recoveredLines
         tvSoundCarrierDB = result.reception.soundCarrierDB
-        status = String(format: "%@ · %.2f / %.2f s · %@ · %@ · RF %.0f ms / %@ %.0f ms · %.2f×",
+        status = String(format: "%@ · %.2f / %.2f s · %@ · %@ · RF %.0f ms / %@ %.0f ms",
             imageDescription, tvTime, result.duration, terrestrialSystem.rawValue, tvLockDescription,
-            result.decodeSeconds * 1000,L("Frame total"),(result.totalSeconds-result.prerollSeconds)*1000,tvAudio.rate)
+            result.decodeSeconds * 1000,L("Frame total"),(result.totalSeconds-result.prerollSeconds)*1000)
         if tvPlaying {
             status += String(format: " · %@ %.0f ms",L("Peak"),tvPlaybackMetrics.maximumProductionSeconds*1000)
         }
@@ -339,11 +446,12 @@ final class PreviewModel: ObservableObject {
         guard tool == .tv, tvDuration > 0, !busy, !tvPlaying else { return }
         renderTask?.cancel(); renderTask = nil; renderRun += 1
         let lastTime = max(0, tvDuration - tvStandard.frameDuration)
-        if tvTime >= lastTime { tvTime = 0 }
+        if tvTime >= lastTime { tvTime = 0; tvLightningState.reset() }
         let startTime = tvTime, standard = tvStandard
         tvPlaybackRun += 1
         let run = tvPlaybackRun
         tvLastPlaybackMetrics = TVPlaybackMetrics()
+        tvPreviewState.droppedFrames = 0; tvPreviewState.playbackRate = 1
         tvTelemetryBucket = nil
         tvPlaybackActivity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep,.latencyCritical],
@@ -353,39 +461,44 @@ final class PreviewModel: ObservableObject {
             do {
                 await tvRenderer.endPlayback()
                 guard run == tvPlaybackRun, !Task.isCancelled else { return }
-                try tvAudio.prepare()
-                let buffer = TVPlaybackBuffer(settings: tvChannel)
+                let capacity = min(60,max(1,tvPreferences.bufferFrames))
+                try tvAudio.prepare(capacity: (capacity+4)*Int(ceil(48_000*standard.frameDuration)))
+                let firstFrame = Int64((startTime*standard.frameRate).rounded())
+                let startSample = TVSoundClock.offset(frame: firstFrame,standard: standard)
+                let buffer = TVPlaybackBuffer(settings: tvChannel,capacity: capacity,firstFrame: firstFrame,frameRate: standard.frameRate)
                 tvPlaybackBuffer = buffer
                 let pcmQueue = tvAudio.pcmQueue, renderer = tvRenderer, hook = tvPlaybackRenderHook
                 // The hot producer loop must never await the main actor merely to
                 // deliver a frame. Window layout/painting cannot consume its budget.
                 let producer = Task.detached(priority: .userInitiated) { [self] in
                     var time = startTime, exhausted = false, outputStarted = false
-                    var pacing = TVPlaybackPacing(), lastRate: Float = 1
+                    var recentCosts = [Double]()
                     while !Task.isCancelled {
                         var produced = false
-                        while !exhausted && Double(pcmQueue.snapshot.pending)/48_000 < 8*standard.frameDuration {
+                        while !exhausted && buffer.queuedFrames < capacity && Double(pcmQueue.snapshot.pending)/48_000 < Double(capacity)*standard.frameDuration {
+                            if outputStarted {
+                                let next = TVPlaybackPacing.nextFrame(after: Int64((time*standard.frameRate).rounded()),
+                                    consumedSamples: pcmQueue.snapshot.consumed,startSample: startSample,standard: standard,
+                                    leadSeconds: min(Double(capacity+2)*standard.frameDuration,(recentCosts.max() ?? standard.frameDuration)*1.1))
+                                if Double(next)/standard.frameRate > lastTime+1e-7 { exhausted = true; break }
+                                time = Double(next)/standard.frameRate
+                            }
                             let productionStart = ContinuousClock.now
                             try await hook?(Int64((time*standard.frameRate).rounded()))
-                            let result = try await renderer.render(time: time,channel: buffer.settings)
+                            let result = try await renderer.render(time: time,channel: buffer.settings,settleAfterSeek: !outputStarted)
                             try Task.checkCancellation()
                             let pcm = result.reception.audio.isEmpty
                                 ? [Float](repeating: 0,count: TVSoundClock.count(frame: result.frameIndex,standard: standard))
                                 : result.reception.audio
-                            try pcmQueue.append(pcm)
+                            try pcmQueue.append(pcm,at: TVSoundClock.offset(frame: result.frameIndex,standard: standard)-startSample)
                             buffer.append(result,frameRate: standard.frameRate)
                             produced = true
                             let wallCost = TVPlaybackMetrics.seconds(productionStart.duration(to: .now))-result.prerollSeconds
+                            recentCosts.append(wallCost)
+                            if recentCosts.count > 8 { recentCosts.removeFirst() }
                             if outputStarted {
                                 buffer.produced(seconds: wallCost,frameDuration: standard.frameDuration,
                                     preview: result)
-                            }
-                            let requested = pacing.requestedRate(cost: wallCost,frameDuration: standard.frameDuration,
-                                queuedSeconds: Double(pcmQueue.snapshot.pending)/48_000)
-                            // Normal speed needs no main-actor round trip. Only a
-                            // threatened FIFO changes TimePitch's playback rate.
-                            if outputStarted && abs(lastRate-requested) > 0.000001 {
-                                lastRate = await setTVAudioRate(requested,run: run)
                             }
                             exhausted = time >= lastTime
                             time = min(lastTime,Double(result.frameIndex+1)/standard.frameRate)
@@ -426,12 +539,6 @@ final class PreviewModel: ObservableObject {
         }
     }
 
-    private func setTVAudioRate(_ requested: Float, run: Int) -> Float {
-        guard run == tvPlaybackRun else { return 1 }
-        tvAudio.setRate(requested)
-        return tvAudio.rate
-    }
-
     private func beginTVAudioPresentation(_ buffer: TVPlaybackBuffer, startTime: Double, run: Int) throws -> Bool {
         guard run == tvPlaybackRun, !Task.isCancelled else { return false }
         try tvAudio.start()
@@ -449,8 +556,13 @@ final class PreviewModel: ObservableObject {
     private func presentTVPlayback(_ buffer: TVPlaybackBuffer, startTime: Double) {
         // The paused frame is already visible. Cadence begins after device startup.
         let audioTime = tvAudio.mediaSeconds
-        guard audioTime > 0, let visible = buffer.visible(at: startTime+audioTime) else { return }
-        presentTVPreview(visible)
+        guard audioTime > 0 else { return }
+        if let visible = buffer.visible(at: startTime+audioTime) { presentTVPreview(visible) }
+        let currentFrame = floor(min(tvDuration,startTime+audioTime)*tvStandard.frameRate+1e-7)
+        if floor(tvTime*tvStandard.frameRate+1e-7) != currentFrame { tvTime = currentFrame/tvStandard.frameRate }
+        let drops = buffer.metrics.skippedFrames
+        if tvPreviewState.droppedFrames != drops { tvPreviewState.droppedFrames = drops }
+        if tvPreviewState.playbackRate != tvAudio.rate { tvPreviewState.playbackRate = tvAudio.rate }
     }
 
     func pauseTVPlayback() {
@@ -472,7 +584,7 @@ final class PreviewModel: ObservableObject {
 
     func seekTV(to time: Double) {
         guard tool == .tv, tvDuration > 0, !busy else { return }
-        tvVisionSpectrum.reset(); tvSoundSpectrum.reset()
+        tvVisionSpectrum.reset(); tvSoundSpectrum.reset(); tvLightningState.reset()
         let resume = tvPlaying
         pauseTVPlayback()
         let clamped = min(max(0, time), max(0, tvDuration - tvStandard.frameDuration))
@@ -550,6 +662,7 @@ final class PreviewModel: ObservableObject {
     }
     func load(_ url: URL,name: String? = nil,removeAfterRead: Bool = false) {
         guard !busy else { return }
+        if url.pathExtension.lowercased() == "analine" { openSession(url); return }
         pauseTVPlayback(); tvResumeAfterScrub = false
         let isVideo = tool == .tv || UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true
         if isVideo && tool != .tv { tool = .tv }
@@ -564,6 +677,7 @@ final class PreviewModel: ObservableObject {
                     let duration = try await prepareTVVideo(url)
                     tvSourceURL = url
                     tvOriginal = nil; processed = nil
+                    tvPreviewState.droppedFrames = 0; tvPreviewState.playbackRate = 1
                     tvDuration = duration
                     tvTime = 0
                     imageDescription = name ?? url.lastPathComponent
@@ -580,7 +694,7 @@ final class PreviewModel: ObservableObject {
                 guard let image = NSImage(data: result.original) else { throw CocoaError(.fileReadCorruptFile) }
                 original = image; processed = tool == .sstv ? sstvOriginal : image; renderedPreset = nil
                 tvDuration = 0; tvOriginal = nil; tvSourceURL = nil
-                tvVisionSpectrum.reset(); tvSoundSpectrum.reset()
+                tvVisionSpectrum.reset(); tvSoundSpectrum.reset(); tvLightningState.reset()
                 tvAudio.stop(); tvHasAudio = false
                 await tvRenderer.unloadVideo()
                 imageDescription = "\(name ?? url.lastPathComponent) · \(result.width) × \(result.height) · \(result.profile)"
@@ -827,12 +941,15 @@ struct ContentView: View {
                                     model.dropImages(providers); return true
                                 }
                                 .overlay { if dropIsTargeted { Rectangle().stroke(EditingTool.tv.logoAccentColor,lineWidth: 3) } }
-                            TVControls(model: model).frame(maxWidth: .infinity)
+                            VStack(spacing: 12) {
+                                TVControls(model: model)
+                                TVPropagationView(model: model).frame(maxHeight: .infinity)
+                            }.frame(minWidth: 300,maxWidth: .infinity).frame(height: 480)
                         }.frame(maxWidth: .infinity,alignment: .leading)
-                        TVTransmitterControls(model: model)
-                        TVPropagationView(model: model)
-                        TVReceiverControls(model: model)
-                        TVReceptionView(model: model)
+                        HStack(alignment: .top,spacing: 16) {
+                            TVTransmitterControls(model: model).frame(width: 420)
+                            TVReceiverControls(model: model)
+                        }
                     }.padding(.bottom,8).padding(.horizontal,6)
                 }.padding(.horizontal,-6)
             } else {
@@ -859,12 +976,12 @@ struct ContentView: View {
                     .disabled(model.busy || model.original == nil)
             }.frame(minHeight: 360)
             }
-            HStack {
-                Text(L("Drag the divider to compare before and after")); Spacer()
-                if model.tool == .tv { TVLockText(state: model.tvReceptionState,model: model) }
-                else { Text(model.tool == .sstv ? "\(model.renderedSSTV.mode.rawValue) · \(L("Signal simulation"))" : model.renderedPreset?.name ?? L("Original / No LUT")) }
+            if model.tool != .tv { HStack {
+                Spacer()
+                Text(model.tool == .sstv ? "\(model.renderedSSTV.mode.rawValue) · \(L("Signal simulation"))" : model.renderedPreset?.name ?? L("Original / No LUT"))
             }
                 .font(.caption).foregroundStyle(.secondary)
+            }
             if model.tool != .tv { Text(model.tool == .sstv ? "\(L("Fit")) \(model.renderedSSTV.mode.dimensions) → TX cache → \(L("baseband channel impairment")) → FM demodulation → \(model.renderedSSTV.mode.rawValue) \(L("reconstruction"))" : L("Source ICC → LUT color transform → LUT Mix → Grain → procedural light leak → sRGB display"))
                 .font(.caption2).foregroundStyle(.secondary)
             }
@@ -881,6 +998,9 @@ struct ContentView: View {
             }
             }
         }.id(languageStore.language).padding(20).frame(minWidth: 1000,minHeight: 760).preferredColorScheme(.dark)
+            .focusedSceneObject(model)
+            .onOpenURL { model.openSession($0) }
+            .navigationTitle(model.sessionURL?.lastPathComponent ?? L("AnaLine"))
             .environment(\.locale, Locale(identifier: languageStore.language.rawValue))
             .task { model.start() }
             .onDisappear { model.stopTransmission(); model.pauseTVPlayback() }
@@ -894,7 +1014,7 @@ struct AnaLineApp: App {
     @StateObject private var languageStore = LanguageStore()
     var body: some Scene {
         WindowGroup(L("AnaLine")) { ContentView(languageStore: languageStore) }.defaultSize(width: 1200,height: 900)
-            .commands { AnaLineAboutCommands() }
+            .commands { AnaLineAboutCommands(); TVSessionCommands() }
         Window(L("About Ana-Line"), id: "about") {
             AnaLineAboutView()
         }

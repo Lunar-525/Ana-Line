@@ -12,7 +12,7 @@ public enum TerrestrialSystem: String, CaseIterable, Codable, Sendable {
     public init(video: TVStandard) { self = video == .pal ? .palDK : .ntscM }
 }
 
-public struct TerrestrialSettings: Equatable, Sendable {
+public struct TerrestrialSettings: Codable, Equatable, Sendable {
     /// Diagnostic scalar path for verifying accelerated numerical results.
     public var execution: TVExecution = .accelerated
     public var signalDB: Float = 0
@@ -34,7 +34,7 @@ public struct TerrestrialSettings: Equatable, Sendable {
     public var decoder = TVDecoderSettings()
     public init() {}
     public init(system: TerrestrialSystem) { rfBandwidthMHz = system.channelMHz }
-    func validate(rate: Double) throws {
+    public func validate(rate: Double) throws {
         try propagation.validate(); try transmitter.validate(); try receiverDamage.validate(); try decoder.validate()
         let values = [signalDB, carrierToNoiseDB, rfBandwidthMHz, echoGain,
                       echoDelayMicroseconds, echoPhaseDegrees, tuningOffsetKHz, manualGainDB]
@@ -100,6 +100,7 @@ public struct TerrestrialReception: Sendable {
     public var visionSpectrum: TVSpectrum?
     public var soundSpectrum: TVSpectrum?
     public var transmitter = TVTransmitterTelemetry()
+    public var lightningEvents = [TVLightningEvent]()
 }
 
 /// A causal, streaming FIR. State survives block boundaries, including between frames.
@@ -844,6 +845,10 @@ public struct TerrestrialEngine: Sendable {
         let received = try channel.transmit(rf, settings: settings)
         let transmitted = ContinuousClock.now
         var result = try receiver.receive(received, settings: settings)
+        result.lightningEvents = TVLightningTimeline.events(
+            time: Double(input.frameIndex)*input.standard.frameDuration,
+            duration: Double(input.samples.count)/input.standard.sampleRate,
+            seed: settings.seed,settings: settings.propagation)
         result.transmitter.forwardPower = forward
         result.transmitter.saturated = settings.transmitter.enabled && amplifier.peakDrivePower >= pow(10,settings.transmitter.backoffDB/10)
         result.transmitter.overmodulated = modulator.overmodulated

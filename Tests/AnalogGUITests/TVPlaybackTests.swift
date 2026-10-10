@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 import AnalogCore
 import Darwin
 import SwiftUI
@@ -159,7 +160,6 @@ final class TVPlaybackTests: XCTestCase {
                         VStack(spacing: 16) {
                             TVPropagationView(model: model)
                             TVReceiverControls(model: model)
-                            TVReceptionView(model: model)
                         }.padding(20).frame(width: 1200).background(Color.black))
                     window.setContentSize(NSSize(width: 1200,height: 1400))
                     try await Task.sleep(for: .milliseconds(200))
@@ -173,6 +173,84 @@ final class TVPlaybackTests: XCTestCase {
         }
         try JSONSerialization.data(withJSONObject: report,options: [.prettyPrinted,.sortedKeys])
             .write(to: URL(fileURLWithPath: injectStalls ? "/private/tmp/Terrestrial-stalled-producer-playback.json" : visibleWindow ? "/private/tmp/Terrestrial-visible-window-playback.json" : scene ? "/private/tmp/Terrestrial-scene-M3Max-playback.json" : "/private/tmp/Terrestrial-M3Max-playback.json"))
+    }
+
+    func testStandardSwitchUsesImportCachesAndPreservesPlayhead() async throws {
+        let path = ProcessInfo.processInfo.environment["PATH",default: "/usr/bin:/bin"]
+        guard TVExecutableResolver.find("ffmpeg",path: path) != nil else { throw XCTSkip("FFmpeg is required") }
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let model = PreviewModel(); model.tvMuted = true
+        defer { model.pauseTVPlayback() }
+        model.load(root.appendingPathComponent("Assets/rickroll.mp4"))
+        try await waitUntil { !model.busy && !model.rendering }
+        XCTAssertGreaterThan(model.tvDuration,200,model.status)
+        model.seekTV(to: 10)
+        try await waitUntil { !model.rendering }
+        var preparedAgain = false
+        let subscription = model.$tvPreparing.sink { if $0 { preparedAgain = true } }
+        for standard in [TVStandard.ntsc,.pal,.ntsc] {
+            let start = ContinuousClock.now
+            model.tvStandard = standard
+            try await waitUntil { !model.busy && !model.rendering }
+            XCTAssertFalse(preparedAgain,"Changing standards must never invoke import/transcode progress")
+            XCTAssertEqual(model.tvTime,10,accuracy: standard.frameDuration)
+            XCTAssertEqual(model.processed?.size.height,CGFloat(standard.height))
+            XCTAssertTrue(model.tvHasAudio)
+            XCTAssertEqual(model.tvLock,.locked,model.status)
+            print("Cached standard switch including preview:",standard,start.duration(to: .now))
+        }
+        // Superseded requests must not leave the workspace busy or use the
+        // cache of a different standard than the selector's final value.
+        model.tvStandard = .pal; model.tvStandard = .ntsc; model.tvStandard = .pal
+        try await waitUntil { !model.busy && !model.rendering }
+        XCTAssertEqual(model.processed?.size.height,576)
+        XCTAssertFalse(preparedAgain)
+        withExtendedLifetime(subscription) {}
+    }
+
+    func testBufferedLightningFollowsDisplayedVideoAndFreezesOnPause() async throws {
+        let path = ProcessInfo.processInfo.environment["PATH",default: "/usr/bin:/bin"]
+        guard TVExecutableResolver.find("ffmpeg",path: path) != nil else { throw XCTSkip("FFmpeg is required") }
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let model = PreviewModel(); model.tvMuted = true
+        defer { model.pauseTVPlayback() }
+        model.tvChannel.propagation.weather.enabled = true
+        model.tvChannel.propagation.weather.lightning = 1
+        model.tvChannel.propagation.weather.lightningRatePerMinute = 120
+        let event = try XCTUnwrap(TVLightningTimeline.events(time: 10,duration: 4,
+            seed: model.tvChannel.seed,settings: model.tvChannel.propagation).first)
+        model.load(root.appendingPathComponent("Assets/rickroll.mp4"))
+        try await waitUntil { !model.busy && !model.rendering }
+        XCTAssertGreaterThan(model.tvDuration,200,model.status)
+        let frameTime = floor(event.time/model.tvStandard.frameDuration)*model.tvStandard.frameDuration
+        model.seekTV(to: frameTime-0.08)
+        try await waitUntil { !model.rendering }
+        XCTAssertNil(model.tvLightningState.flash)
+        var strikes = 0
+        let observer = model.tvLightningState.$flash.sink { flash in
+            guard let flash, flash.age == 0 else { return }
+            strikes += 1
+            XCTAssertGreaterThanOrEqual(flash.event.time+TVLightningEvent.pulseDuration,model.tvTime)
+            XCTAssertLessThan(flash.event.time,model.tvTime+model.tvStandard.frameDuration,
+                "A producer working eight frames ahead must not trigger the visible bolt")
+        }
+        model.toggleTVPlayback()
+        try await waitUntil { model.tvTime > frameTime+0.4 }
+        model.pauseTVPlayback()
+        XCTAssertGreaterThan(strikes,0)
+        // Another strike can occur during the first event's afterglow; inspect
+        // the explicitly selected event below rather than assuming clear sky.
+        model.seekTV(to: frameTime)
+        try await waitUntil { !model.rendering }
+        let frozen = try XCTUnwrap(model.tvLightningState.flash)
+        XCTAssertEqual(frozen.event,event)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(model.tvLightningState.flash,frozen,"Wall time cannot advance a paused strike")
+        model.seekTV(to: frameTime-0.08)
+        XCTAssertNil(model.tvLightningState.flash,"Seek clears the old flash before rendering completes")
+        try await waitUntil { !model.rendering }
+        XCTAssertNil(model.tvLightningState.flash)
+        withExtendedLifetime(observer) {}
     }
 
     func testPlayPauseSeekScrubEndAndModeSwitch() async throws {

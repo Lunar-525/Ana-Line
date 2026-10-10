@@ -57,15 +57,16 @@ final class TVRendererTests: XCTestCase {
             .deletingLastPathComponent().appendingPathComponent("Assets/rickroll.mp4")
         let renderer = TVRenderer(executableSearchPath: finderPath)
         do {
+            let progress = PreparationLog()
+            _ = try await renderer.loadVideo(source,progress: { progress.append($0) })
+            let fractions = progress.values.compactMap(\.fraction)
+            XCTAssertEqual(fractions.first,0)
+            XCTAssertEqual(fractions.last,1)
+            XCTAssertTrue(zip(fractions,fractions.dropFirst()).allSatisfy { $0 <= $1 })
+            XCTAssertTrue(fractions.contains { $0 > 0 && $0 < 0.9 },"FFmpeg must report intermediate progress")
+            XCTAssertTrue(progress.values.contains { $0.stage == .audio })
             for standard in TVStandard.allCases {
-                let progress = PreparationLog()
-                let duration = try await renderer.loadVideo(source, standard: standard,progress: { progress.append($0) })
-                let fractions = progress.values.compactMap(\.fraction)
-                XCTAssertEqual(fractions.first,0)
-                XCTAssertEqual(fractions.last,1)
-                XCTAssertTrue(zip(fractions,fractions.dropFirst()).allSatisfy { $0 <= $1 })
-                XCTAssertTrue(fractions.contains { $0 > 0 && $0 < 0.9 },"FFmpeg must report intermediate progress")
-                XCTAssertTrue(progress.values.contains { $0.stage == .audio })
+                let duration = try await renderer.selectStandard(standard)
                 XCTAssertEqual(duration, 213.04, accuracy: 0.1)
                 let audioURL = await renderer.normalizedAudioURL()
                 let audio = try XCTUnwrap(audioURL)
@@ -283,6 +284,46 @@ final class TVRendererTests: XCTestCase {
         await renderer.unloadVideo()
     }
 
+    func testPreparedStandardsSurviveSourceRemovalAndFailedReplacement() async throws {
+        try requireFFmpeg()
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("AnaLine-cache-\(UUID().uuidString).mkv")
+        defer { try? FileManager.default.removeItem(at: source) }
+        let process = Process(); process.executableURL = TVExecutableResolver.find("ffmpeg",path: finderPath)
+        process.arguments = ["-hide_banner","-loglevel","error","-y","-f","lavfi","-i",
+            "testsrc2=size=160x120:rate=30","-f","lavfi","-i","sine=frequency=1000:sample_rate=48000",
+            "-t","0.25","-c:v","ffv1","-c:a","pcm_s16le",source.path]
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus,0)
+        let renderer = TVRenderer(executableSearchPath: finderPath)
+        _ = try await renderer.loadVideo(source,standard: .ntsc)
+        let palPath = await renderer.normalizedVideoURL(standard: .pal)
+        let ntscPath = await renderer.normalizedVideoURL(standard: .ntsc)
+        let audioPath = await renderer.normalizedAudioURL()
+        let outputs = [try XCTUnwrap(palPath),try XCTUnwrap(ntscPath),try XCTUnwrap(audioPath)]
+        let before = try outputs.map { try Data(contentsOf: $0) }
+        try FileManager.default.removeItem(at: source)
+        do {
+            _ = try await renderer.loadVideo(source)
+            XCTFail("The removed source must fail a new import")
+        } catch { /* A failed replacement must retain both old caches. */ }
+        for standard in [TVStandard.pal,.ntsc,.pal,.ntsc] {
+            let duration = try await renderer.selectStandard(standard)
+            XCTAssertGreaterThan(duration,0)
+            let frame = try await renderer.render(time: duration)
+            XCTAssertEqual(frame.original.height,standard.height)
+            XCTAssertEqual(frame.image.height,standard.height)
+            XCTAssertLessThan(Double(frame.frameIndex)*standard.frameDuration,duration)
+            XCTAssertEqual(frame.reception.audio.count,TVSoundClock.count(frame: frame.frameIndex,standard: standard))
+        }
+        XCTAssertEqual(try outputs.map { try Data(contentsOf: $0) },before,"Switches must reuse video and PCM files")
+        await renderer.unloadVideo()
+        for output in outputs { XCTAssertFalse(FileManager.default.fileExists(atPath: output.path)) }
+        do {
+            _ = try await renderer.selectStandard(.pal)
+            XCTFail("An unloaded renderer has no standard cache")
+        } catch TVVideoError.noVideo {} catch { XCTFail("Unexpected error: \(error)") }
+    }
+
     func testReleasingRendererRemovesItsConversionOutputs() async throws {
         try requireFFmpeg()
         let source = FileManager.default.temporaryDirectory.appendingPathComponent("AnaLine-cleanup-\(UUID().uuidString).mkv")
@@ -297,15 +338,18 @@ final class TVRendererTests: XCTestCase {
         weak var weakRenderer = renderer
         _ = try await renderer!.loadVideo(source)
         let audioPath = await renderer!.normalizedAudioURL()
-        let audio = try XCTUnwrap(audioPath), video = audio.deletingPathExtension().appendingPathExtension("mp4")
+        let audio = try XCTUnwrap(audioPath)
+        let palPath = await renderer!.normalizedVideoURL(standard: .pal)
+        let ntscPath = await renderer!.normalizedVideoURL(standard: .ntsc)
+        let videos = [try XCTUnwrap(palPath),try XCTUnwrap(ntscPath)]
         XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: video.path))
+        for video in videos { XCTAssertTrue(FileManager.default.fileExists(atPath: video.path)) }
         // Release without calling unloadVideo: the lifetime owner must clean up.
         renderer = nil
         for _ in 0..<50 where weakRenderer != nil { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertNil(weakRenderer)
         XCTAssertFalse(FileManager.default.fileExists(atPath: audio.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: video.path))
+        for video in videos { XCTAssertFalse(FileManager.default.fileExists(atPath: video.path)) }
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
     }
 

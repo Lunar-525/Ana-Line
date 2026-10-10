@@ -80,44 +80,6 @@ private struct TVBroadcastStandardSwitch: View {
     }
 }
 
-struct TVPathControls: View {
-    @ObservedObject var model: TVControlState
-    init(model: PreviewModel) { model.tvControlState.bind(model); self.model = model.tvControlState }
-    init(state: TVControlState) { self.model = state }
-    private var defaults: TerrestrialSettings { TerrestrialSettings(system: model.terrestrialSystem) }
-    var body: some View {
-        GroupBox(L("Propagation details")) {
-                    VStack(spacing: 10) {
-                        ParameterSlider(name: L("Ground reflection"),value: $model.tvChannel.propagation.groundReflection,
-                            defaultValue: 0,range: 0...0.8,percent: true)
-                        if model.tvChannel.propagation.ridgeEnabled {
-                            ParameterSlider(name: L("Ridge height · m"),value: $model.tvChannel.propagation.ridgeHeightM,defaultValue: 65,range: 0...500)
-                            ParameterSlider(name: L("Ridge position"),value: $model.tvChannel.propagation.ridgePosition,defaultValue: 0.5,range: 0.1...0.9,percent: true)
-                        }
-                    }.padding(.top,6)
-                }
-    }
-}
-
-struct TVRFControls: View {
-    @ObservedObject var model: TVControlState
-    init(model: PreviewModel) { model.tvControlState.bind(model); self.model = model.tvControlState }
-    init(state: TVControlState) { self.model = state }
-    private var defaults: TerrestrialSettings { TerrestrialSettings(system: model.terrestrialSystem) }
-    var body: some View {
-        GroupBox(L("RF channel")) {
-                    VStack(spacing: 12) {
-                        ParameterSlider(name: L("Echo amplitude"), value: $model.tvChannel.echoGain,
-                            defaultValue: defaults.echoGain, range: 0...0.9, percent: true)
-                        ParameterSlider(name: L("Echo delay · μs"), value: $model.tvChannel.echoDelayMicroseconds,
-                            defaultValue: defaults.echoDelayMicroseconds, range: 0...20)
-                        ParameterSlider(name: L("Echo phase · °"), value: $model.tvChannel.echoPhaseDegrees,
-                            defaultValue: defaults.echoPhaseDegrees, range: -180...180)
-                    }.padding(.top, 6)
-                }
-    }
-}
-
 struct TVTunerControls: View {
     @ObservedObject var model: TVControlState
     init(model: PreviewModel) { model.tvControlState.bind(model); self.model = model.tvControlState }

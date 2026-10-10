@@ -2,7 +2,7 @@ import Foundation
 import Accelerate
 import Dispatch
 
-public enum TVExecution: Equatable, Sendable { case reference, accelerated }
+public enum TVExecution: String, Codable, Equatable, Sendable { case reference, accelerated }
 
 /// Each worker owns disjoint elements. The owning array keeps this buffer alive
 /// until synchronous concurrentPerform returns; no pointer escapes that scope.

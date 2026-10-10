@@ -60,14 +60,17 @@ struct AnaLineSettingsView: View {
     @ObservedObject var languageStore: LanguageStore
 
     var body: some View {
-        Form {
-            Picker(L("Language"), selection: Binding(
+        VStack(alignment: .leading,spacing: 16) {
+            HStack {
+            Text(L("Language")); Spacer()
+            Picker("", selection: Binding(
                 get: { languageStore.language },
                 set: { languageStore.setLanguage($0) }
             )) {
                 ForEach(AppLanguage.allCases) { language in
                     Text(language.title).tag(language)
                 }
+            }.labelsHidden().frame(width: 160)
             }
             Text(L("Choose the language used by Ana-Line's interface."))
                 .font(.caption)
@@ -75,9 +78,12 @@ struct AnaLineSettingsView: View {
             Text(L("The macOS menu bar changes after AnaLine restarts."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Divider()
+            TVPreferencesView(preferences: .shared)
         }
         .padding(24)
-        .frame(width: 360)
+        .frame(width: 480)
+        .background(Color(nsColor: .windowBackgroundColor))
         .environment(\.locale, Locale(identifier: languageStore.language.rawValue))
         .id(languageStore.language)
     }

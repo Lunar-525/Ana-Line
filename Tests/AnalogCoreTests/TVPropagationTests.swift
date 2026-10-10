@@ -77,7 +77,7 @@ final class TVPropagationTests: XCTestCase {
     }
 
     func testLightningIsRepeatableContinuousAndSharedInTimeAcrossCarriers() {
-        var s = TVPropagationSettings(); s.enabled = true; s.weather.enabled = true; s.weather.lightning = 1
+        var s = TVPropagationSettings(); s.enabled = true; s.weather.enabled = true; s.weather.lightning = 1; s.weather.lightningRatePerMinute = 120
         let rate = 48_000.0, count = Int(rate*2)
         func interference(_ slice: Range<Int>,offset: Double) -> ([Float],[Float]) {
             var i = [Float](repeating: 0,count: slice.count), q = i
@@ -92,6 +92,100 @@ final class TVPropagationTests: XCTestCase {
         let cut = 12_037, a = interference(0..<cut,offset: 0), b = interference(cut..<count,offset: 0)
         XCTAssertLessThan(zip(whole.0,a.0+b.0).map { abs($0-$1) }.max()!,0.00001)
         XCTAssertEqual(whole.0,interference(0..<count,offset: 0).0)
+    }
+
+    func testLightningMetadataMatchesActualRFImpulsesAndBypass() throws {
+        var s = TVPropagationSettings(); s.enabled = true
+        s.weather.enabled = true; s.weather.lightning = 1; s.weather.lightningRatePerMinute = 120
+        let rate = 48_000.0, duration = 2.0
+        let events = TVLightningTimeline.events(time: 0,duration: duration,seed: 1234,settings: s)
+        XCTAssertFalse(events.isEmpty)
+        var i = [Float](repeating: 0,count: Int(rate*duration)), q = i
+        TVSceneChannel.interference(i: &i,q: &q,rate: rate,carrierOffsetHz: 0,time: 0,
+            noiseReferenceRate: rate,seed: 1234,settings: s)
+        for n in i.indices {
+            let time = Double(n)/rate
+            let inside = events.contains { time >= $0.time && time < $0.time+TVLightningEvent.pulseDuration }
+            XCTAssertEqual(i[n] != 0 || q[n] != 0,inside,"No RF strike may occur outside the published event timeline")
+        }
+        let first = try XCTUnwrap(events.first)
+        XCTAssertTrue(TVLightningTimeline.events(time: first.time+0.002,duration: 0.002,seed: 1234,settings: s).contains(first))
+        XCTAssertTrue(TVLightningTimeline.events(time: first.time-0.01,duration: 0.005,seed: 1234,settings: s).isEmpty)
+        XCTAssertEqual(events,TVLightningTimeline.events(time: 0,duration: duration,seed: 1234,settings: s))
+        var weak = s; weak.weather.lightning = 0.2
+        let weaker = TVLightningTimeline.events(time: 0,duration: duration,seed: 1234,settings: weak)
+        XCTAssertEqual(weaker.map(\.token),events.map(\.token),"Intensity must not change the schedule")
+        XCTAssertEqual(weaker.map(\.time),events.map(\.time))
+        XCTAssertTrue(weaker.allSatisfy { $0.intensity == 0.2 })
+        s.weather.lightning = 0
+        XCTAssertTrue(TVLightningTimeline.events(time: 0,duration: duration,seed: 1234,settings: s).isEmpty)
+        s.weather.lightning = 1; s.weather.enabled = false
+        XCTAssertTrue(TVLightningTimeline.events(time: 0,duration: duration,seed: 1234,settings: s).isEmpty)
+        s.weather.enabled = true; s.enabled = false
+        XCTAssertTrue(TVLightningTimeline.events(time: 0,duration: duration,seed: 1234,settings: s).isEmpty)
+    }
+
+    func testLightningRateIsIndependentOfIntensityAndMatchesItsUnits() throws {
+        var s = TVPropagationSettings(); s.enabled = true; s.weather.enabled = true
+        s.weather.lightning = 0.25; s.weather.lightningRatePerMinute = 30
+        let low = TVLightningTimeline.events(time: 0,duration: 3600,seed: 42,settings: s)
+        XCTAssertEqual(Double(low.count)/60,30,accuracy: 3,"Rate is average strikes per minute")
+        s.weather.lightning = 1
+        let strong = TVLightningTimeline.events(time: 0,duration: 3600,seed: 42,settings: s)
+        XCTAssertEqual(low.map(\.time),strong.map(\.time))
+        XCTAssertEqual(low.map(\.token),strong.map(\.token))
+        s.weather.lightningRatePerMinute = 120
+        let frequent = TVLightningTimeline.events(time: 0,duration: 3600,seed: 42,settings: s)
+        XCTAssertEqual(Double(frequent.count)/60,120,accuracy: 6)
+        let tokens = Set(frequent.map(\.token))
+        XCTAssertTrue(strong.allSatisfy { tokens.contains($0.token) })
+        XCTAssertTrue(frequent.allSatisfy { $0.intensity == 1 })
+        s.weather.lightningRatePerMinute = 0
+        XCTAssertTrue(TVLightningTimeline.events(time: 0,duration: 3600,seed: 42,settings: s).isEmpty)
+        var i = [Float](repeating: 0,count: 48_000),q = i
+        TVSceneChannel.interference(i: &i,q: &q,rate: 48_000,carrierOffsetHz: 0,time: 0,
+            noiseReferenceRate: 48_000,seed: 42,settings: s)
+        XCTAssertTrue(i.allSatisfy { $0 == 0 } && q.allSatisfy { $0 == 0 })
+        for invalid: Float in [-1,121,.infinity,.nan] {
+            s.weather.lightningRatePerMinute = invalid
+            XCTAssertThrowsError(try s.validate())
+        }
+    }
+
+    func testLightningIntensityScalesRFWithoutChangingImpulseSupport() {
+        var s = TVPropagationSettings(); s.enabled = true; s.weather.enabled = true
+        s.weather.lightning = 1; s.weather.lightningRatePerMinute = 120
+        func signal(_ strength: Float) -> ([Float],[Float]) {
+            var settings = s; settings.weather.lightning = strength
+            var i = [Float](repeating: 0,count: 96_000),q = i
+            TVSceneChannel.interference(i: &i,q: &q,rate: 48_000,carrierOffsetHz: 0,time: 0,
+                noiseReferenceRate: 48_000,seed: 42,settings: settings)
+            return (i,q)
+        }
+        let strong = signal(1), weak = signal(0.2),off = signal(0)
+        XCTAssertGreaterThan(strong.0.map { abs($0) }.max()!,1)
+        XCTAssertEqual(strong.0.map { $0 != 0 },weak.0.map { $0 != 0 })
+        XCTAssertLessThan(zip(strong.0,weak.0).map { abs($0*0.2-$1) }.max()!,1e-6)
+        XCTAssertLessThan(zip(strong.1,weak.1).map { abs($0*0.2-$1) }.max()!,1e-6)
+        XCTAssertTrue(off.0.allSatisfy { $0 == 0 } && off.1.allSatisfy { $0 == 0 })
+    }
+
+    func testDecodedPALAndNTSCFramesCarryTheirOwnLightningEvent() throws {
+        for system in TerrestrialSystem.allCases {
+            var settings = TerrestrialSettings(system: system)
+            settings.propagation.enabled = true; settings.propagation.weather.enabled = true
+            settings.propagation.weather.lightning = 1
+            settings.propagation.weather.lightningRatePerMinute = 120
+            let event = try XCTUnwrap(TVLightningTimeline.events(time: 0,duration: 4,seed: settings.seed,settings: settings.propagation).first)
+            let index = Int64(floor(event.time/system.video.frameDuration))
+            let input = try TVEngine.encode(TVFrame.colorBars(system.video),frameIndex: index)
+            var engine = TerrestrialEngine(system: system)
+            let result = try engine.process(input,settings: settings)
+            XCTAssertTrue(result.lightningEvents.contains(event))
+            settings.propagation.weather.enabled = false
+            let bypass = try engine.process(input,settings: settings)
+            XCTAssertTrue(bypass.lightningEvents.isEmpty)
+        }
     }
 
     func testIonosphericRemoteSourceFavorsVHFAndFMPhaseIsContinuous() {

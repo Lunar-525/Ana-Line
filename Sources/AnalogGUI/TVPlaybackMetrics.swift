@@ -17,7 +17,14 @@ struct TVPlaybackMetrics {
     private(set) var maximumPresentationLateness = 0.0
     private(set) var skippedFrames: Int64 = 0
     private var previousPresentation: ContinuousClock.Instant?
-    private var previousFrame: Int64?
+    private var resolvedFrame: Int64?
+
+    init(firstFrame: Int64? = nil) { resolvedFrame = firstFrame.map { $0-1 } }
+    mutating func dropped(through frame: Int64) {
+        if let resolvedFrame,frame > resolvedFrame {
+            skippedFrames += frame-resolvedFrame; self.resolvedFrame = frame
+        }
+    }
 
     mutating func produced(seconds: Double, frameDuration: Double, preview: TVRenderer.Preview) {
         producedFrames += 1
@@ -36,9 +43,9 @@ struct TVPlaybackMetrics {
         if let previousPresentation {
             maximumPresentationGap = max(maximumPresentationGap,Self.seconds(previousPresentation.duration(to: now)))
         }
-        if let previousFrame { skippedFrames += max(0,frame-previousFrame-1) }
+        if let resolvedFrame { skippedFrames += max(0,frame-resolvedFrame-1) }
         maximumPresentationLateness = max(maximumPresentationLateness,lateness)
-        previousPresentation = now; previousFrame = frame; presentedFrames += 1
+        previousPresentation = now; resolvedFrame = frame; presentedFrames += 1
     }
     static func seconds(_ duration: Duration) -> Double {
         let c = duration.components
@@ -51,29 +58,45 @@ struct TVPlaybackMetrics {
 final class TVPlaybackBuffer: @unchecked Sendable {
     private let lock = NSLock()
     private var pending = [(start: Double, preview: TVRenderer.Preview)]()
+    private var latest: TVRenderer.Preview?
     private var presentedFrame: Int64?
     private var timings = TVPlaybackMetrics()
     private var channel: TerrestrialSettings
-    init(settings: TerrestrialSettings) { channel = settings }
+    private let frameRate: Double
+    let capacity: Int
+    init(settings: TerrestrialSettings,capacity: Int = 8,firstFrame: Int64 = 0,frameRate: Double = 25) {
+        channel = settings; self.capacity = max(1,capacity); self.frameRate = frameRate
+        timings = TVPlaybackMetrics(firstFrame: firstFrame)
+    }
     var settings: TerrestrialSettings {
         get { lock.withLock { channel } }
         set { lock.withLock { channel = newValue } }
     }
     var metrics: TVPlaybackMetrics { lock.withLock { timings } }
-    var lastPreview: TVRenderer.Preview? { lock.withLock { pending.last?.preview } }
+    var lastPreview: TVRenderer.Preview? { lock.withLock { latest } }
+    var queuedFrames: Int { lock.withLock { pending.count } }
     func append(_ preview: TVRenderer.Preview, frameRate: Double) {
-        lock.withLock { pending.append((Double(preview.frameIndex)/frameRate,preview)) }
+        lock.withLock {
+            latest = preview
+            pending.append((Double(preview.frameIndex)/frameRate,preview))
+            while pending.count > capacity {
+                let dropped = pending.removeFirst(); timings.dropped(through: dropped.preview.frameIndex)
+            }
+        }
     }
     func produced(seconds: Double, frameDuration: Double, preview: TVRenderer.Preview) {
         lock.withLock { timings.produced(seconds: seconds,frameDuration: frameDuration,preview: preview) }
     }
     func visible(at mediaTime: Double) -> TVRenderer.Preview? {
         lock.withLock {
-            while pending.count > 1 && pending[1].start <= mediaTime { pending.removeFirst() }
+            let expired = Int64(floor(mediaTime*frameRate+1e-7))-1
+            while let frame = pending.first,frame.preview.frameIndex <= expired { pending.removeFirst() }
+            timings.dropped(through: expired)
             guard let frame = pending.first, frame.start <= mediaTime,
                   presentedFrame != frame.preview.frameIndex else { return nil }
             timings.presented(frame: frame.preview.frameIndex,lateness: mediaTime-frame.start)
             presentedFrame = frame.preview.frameIndex
+            pending.removeFirst()
             return frame.preview
         }
     }

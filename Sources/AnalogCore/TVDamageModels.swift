@@ -1,6 +1,6 @@
 import Foundation
 
-public struct TVEncoderDamageSettings: Equatable, Sendable {
+public struct TVEncoderDamageSettings: Codable, Equatable, Sendable {
     public var enabled = false
     public var differentialGain: Float = 0
     public var differentialPhaseDegrees: Float = 0
@@ -17,7 +17,7 @@ public struct TVEncoderDamageSettings: Equatable, Sendable {
     }
 }
 
-public struct TVVSBFilterSettings: Equatable, Sendable {
+public struct TVVSBFilterSettings: Codable, Equatable, Sendable {
     public var enabled = false
     public var transitionMHz: Float = 0.2
     /// Excess group delay at fsc, on top of the causal FIR's constant delay.
@@ -31,7 +31,7 @@ public struct TVVSBFilterSettings: Equatable, Sendable {
     }
 }
 
-public struct TVReceiverDamageSettings: Equatable, Sendable {
+public struct TVReceiverDamageSettings: Codable, Equatable, Sendable {
     public var agcEnabled = false
     public var agcResponseMS: Float = 250
     public var agcOvershoot: Float = 0

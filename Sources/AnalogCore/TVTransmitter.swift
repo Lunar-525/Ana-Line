@@ -49,7 +49,7 @@ private final class TVPADecimator: @unchecked Sendable {
     }
 }
 
-public struct TVTransmitterSettings: Equatable, Sendable {
+public struct TVTransmitterSettings: Codable, Equatable, Sendable {
     public var enabled = false
     /// Nominal RF drive power relative to the original sync-carrier reference.
     /// Actual forward power is measured after any PA compression.

@@ -2,7 +2,7 @@ import XCTest
 import SwiftUI
 import AppKit
 import Combine
-import AnalogCore
+@testable import AnalogCore
 @testable import AnalogGUI
 
 @MainActor
@@ -44,8 +44,90 @@ final class TVRackTests: XCTestCase {
         let a = model.tvControlState.objectWillChange.sink { controls += 1 }
         let b = model.objectWillChange.sink { workspace += 1 }
         model.tvTXInstrumentState.reading = TVTransmitterTelemetry()
+        model.tvReceptionState.agcDB = 15
+        model.tvReceptionState.synchronization.horizontal = .locked
+        model.tvVisionSpectrum.update(TVSpectrum(sampleRate: 16_000_000,centerHz: 0,
+            powerDB: .init(repeating: -40,count: 512)),time: 1)
         XCTAssertEqual(controls,0); XCTAssertEqual(workspace,0)
         withExtendedLifetime((a,b)) {}
+    }
+    func testReceiverResetPreservesTransmitterAndPropagation() {
+        let model = PreviewModel(); model.tvStandard = .ntsc
+        let state = model.tvControlState; state.bind(model)
+        state.tvChannel.transmitter.powerDB = -15
+        state.tvChannel.transmitter.encoder.enabled = true
+        state.tvChannel.propagation.weather.rainMMHour = 50
+        state.tvChannel.echoGain = 0.4
+        state.tvChannel.echoDelayMicroseconds = 12
+        state.tvChannel.tuningOffsetKHz = 600
+        state.tvChannel.rfBandwidthMHz = 2
+        state.tvChannel.automaticGain = false
+        state.tvChannel.receiverDamage.syncEnabled = true
+        state.tvChannel.decoder.combFailure = 0.8
+        let previous = state.tvChannel
+        state.resetReceiver()
+        XCTAssertEqual(state.tvChannel.transmitter,previous.transmitter)
+        XCTAssertEqual(state.tvChannel.propagation,previous.propagation)
+        XCTAssertEqual(state.tvChannel.echoGain,previous.echoGain)
+        XCTAssertEqual(state.tvChannel.echoDelayMicroseconds,previous.echoDelayMicroseconds)
+        XCTAssertEqual(state.tvChannel.rfBandwidthMHz,6)
+        XCTAssertEqual(state.tvChannel.tuningOffsetKHz,0)
+        XCTAssertTrue(state.tvChannel.automaticGain)
+        XCTAssertEqual(state.tvChannel.receiverDamage,TVReceiverDamageSettings())
+        XCTAssertEqual(state.tvChannel.decoder,TVDecoderSettings())
+        XCTAssertEqual(model.tvChannel,state.tvChannel)
+    }
+    func testNativeReceiverPairSnapshots() async throws {
+        guard ProcessInfo.processInfo.environment["ANALINE_CAPTURE_RACK"] == "1" else {
+            throw XCTSkip("Opt-in native receiver layout verification")
+        }
+        _ = NSApplication.shared
+        let model = PreviewModel(); model.tool = .tv
+        model.tvChannel.receiverDamage.agcEnabled = true
+        model.tvChannel.receiverDamage.syncEnabled = true
+        model.tvChannel.receiverDamage.horizontalOscillatorPPM = -500
+        model.tvChannel.receiverDamage.verticalHoldHz = -2
+        model.tvChannel.tuningOffsetKHz = -1500
+        model.tvChannel.decoder.combFailure = 1
+        model.tvDuration = 12
+        model.tvReceptionState.lock = .holding
+        model.tvReceptionState.synchronization.horizontal = .locked
+        model.tvReceptionState.synchronization.vertical = .holding
+        model.tvReceptionState.synchronization.color = .searching
+        model.tvReceptionState.agcDB = 28.4
+        model.tvReceptionState.carrierErrorHz = -12850
+        model.tvReceptionState.syncConfidence = 0.85
+        model.tvReceptionState.recoveredLines = 570
+        // Display fixtures exercise a populated trace and full ten-second history.
+        for row in 0..<100 {
+            let powers = (0..<512).map { bin -> Float in
+                let f = (Double(bin)/512-0.5)*model.tvStandard.sampleRate/1e6
+                let floor = -88 + 5 * sin(Double(bin)*0.3+Double(row)*0.15)
+                let carrier = 60 * exp(-pow((f-1.5)/0.08,2))
+                let sideband = 40 * exp(-pow((f-3)/2.5,2))
+                return Float(floor + carrier + sideband)
+            }
+            model.tvVisionSpectrum.update(TVSpectrum(sampleRate: model.tvStandard.sampleRate,centerHz: 0,powerDB: powers),time: Double(row)/10)
+        }
+        let window = NSWindow(contentRect: NSRect(x: 60,y: 60,width: 1000,height: 440),
+            styleMask: [.titled,.closable],backing: .buffered,defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        for width in [1000,1200] {
+            window.contentView = NSHostingView(rootView:
+                HStack(alignment: .top,spacing: 16) {
+                    TVTransmitterControls(model: model).frame(width: 420)
+                    TVReceiverControls(model: model)
+                }.padding(20).frame(width: CGFloat(width),height: 440,alignment: .top).background(Color(white: 0.06)))
+            window.setContentSize(NSSize(width: width,height: 440)); window.orderFront(nil)
+            try await Task.sleep(for: .milliseconds(200))
+            let view = try XCTUnwrap(window.contentView)
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds,to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png,properties: [:]))
+                .write(to: root.appendingPathComponent("build/TV-receiver-pair-\(width).png"))
+        }
     }
     func testNativeRackSnapshots() async throws {
         guard ProcessInfo.processInfo.environment["ANALINE_CAPTURE_RACK"] == "1" else {

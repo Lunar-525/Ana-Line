@@ -1,0 +1,220 @@
+{
+  "runs": [
+    {
+      "layout": "propagation sidebar, original synchronous weather canvas",
+      "passed": false,
+      "results": [
+        {
+          "injected_stalls": false,
+          "maximum_delivery_overhead_ms": 0.040333000000000035,
+          "maximum_presentation_gap_ms": 46.0055,
+          "maximum_presentation_lateness_ms": 9.20833333334059,
+          "maximum_production_ms": 43.898667,
+          "maximum_render_ms": 43.871417,
+          "media_speed": 0.9999484840240112,
+          "playback_rate": 1,
+          "presented_frames": 764,
+          "produced_frames": 766,
+          "production_deadline_misses": 2,
+          "skipped_frames": 0,
+          "system": "PAL-D/K",
+          "underrun_samples": 0,
+          "visible_window": true,
+          "wall_seconds": 30.006879167,
+          "worst_frame_source_encode_rf_image_ms": [
+            3.8606249999999998,
+            3.7090840000000003,
+            35.115500000000004,
+            1.186208
+          ],
+          "worst_frame_vsb_pa_channel_tuner_carrier_sync_decode_sound_ms": [
+            7.38525,
+            9.720792000000001,
+            2.280667,
+            8.179666000000001,
+            1.593167,
+            4.985792,
+            0.95575
+          ]
+        },
+        {
+          "injected_stalls": false,
+          "maximum_delivery_overhead_ms": 0.7520000000000027,
+          "maximum_presentation_gap_ms": 47.726709,
+          "maximum_presentation_lateness_ms": 28.408333333338476,
+          "maximum_production_ms": 41.435,
+          "maximum_render_ms": 40.683,
+          "media_speed": 1.0001321897856406,
+          "playback_rate": 1,
+          "presented_frames": 916,
+          "produced_frames": 918,
+          "production_deadline_misses": 1,
+          "skipped_frames": 0,
+          "system": "NTSC-M",
+          "underrun_samples": 0,
+          "visible_window": true,
+          "wall_seconds": 30.001367459,
+          "worst_frame_source_encode_rf_image_ms": [
+            6.181708,
+            2.198375,
+            30.961,
+            1.341917
+          ],
+          "worst_frame_vsb_pa_channel_tuner_carrier_sync_decode_sound_ms": [
+            6.475416,
+            3.648834,
+            3.5039160000000003,
+            6.0392090000000005,
+            4.122666,
+            6.4370840000000005,
+            0.71425
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "propagation sidebar, asynchronous weather canvas, static compact glyphs",
+      "passed": false,
+      "results": [
+        {
+          "injected_stalls": false,
+          "maximum_delivery_overhead_ms": 0.08458399999999866,
+          "maximum_presentation_gap_ms": 56.076083,
+          "maximum_presentation_lateness_ms": 17.208333333336157,
+          "maximum_production_ms": 65.900834,
+          "maximum_render_ms": 65.880209,
+          "media_speed": 1.0000792866360322,
+          "playback_rate": 1,
+          "presented_frames": 764,
+          "produced_frames": 766,
+          "production_deadline_misses": 3,
+          "skipped_frames": 0,
+          "system": "PAL-D/K",
+          "underrun_samples": 0,
+          "visible_window": true,
+          "wall_seconds": 30.0029545,
+          "worst_frame_source_encode_rf_image_ms": [
+            6.102291999999999,
+            4.795375,
+            53.837583,
+            1.144959
+          ],
+          "worst_frame_vsb_pa_channel_tuner_carrier_sync_decode_sound_ms": [
+            7.9174999999999995,
+            6.831125,
+            2.323042,
+            18.311083,
+            2.1088750000000003,
+            15.126584,
+            1.198791
+          ]
+        },
+        {
+          "injected_stalls": false,
+          "maximum_delivery_overhead_ms": 0.07712499999999733,
+          "maximum_presentation_gap_ms": 46.146166,
+          "maximum_presentation_lateness_ms": 10.641666666671767,
+          "maximum_production_ms": 33.373417,
+          "maximum_render_ms": 33.341042,
+          "media_speed": 1.0001250281167449,
+          "playback_rate": 1,
+          "presented_frames": 916,
+          "produced_frames": 918,
+          "production_deadline_misses": 1,
+          "skipped_frames": 0,
+          "system": "NTSC-M",
+          "underrun_samples": 0,
+          "visible_window": true,
+          "wall_seconds": 30.001582292,
+          "worst_frame_source_encode_rf_image_ms": [
+            1.618792,
+            4.170458,
+            26.070834,
+            1.480958
+          ],
+          "worst_frame_vsb_pa_channel_tuner_carrier_sync_decode_sound_ms": [
+            4.464666,
+            4.0362089999999995,
+            3.269375,
+            6.315834000000001,
+            1.217916,
+            5.587,
+            1.162417
+          ]
+        }
+      ]
+    },
+    {
+      "layout": "propagation sidebar, 12 Hz asynchronous weather canvas, static compact glyphs",
+      "passed": false,
+      "results": [
+        {
+          "injected_stalls": false,
+          "maximum_delivery_overhead_ms": 0.10795800000000175,
+          "maximum_presentation_gap_ms": 46.277084,
+          "maximum_presentation_lateness_ms": 9.20833333334059,
+          "maximum_production_ms": 59.936625,
+          "maximum_render_ms": 59.90625,
+          "media_speed": 1.0000733659514,
+          "playback_rate": 1,
+          "presented_frames": 764,
+          "produced_frames": 765,
+          "production_deadline_misses": 10,
+          "skipped_frames": 0,
+          "system": "PAL-D/K",
+          "underrun_samples": 0,
+          "visible_window": true,
+          "wall_seconds": 30.003132125,
+          "worst_frame_source_encode_rf_image_ms": [
+            1.1722080000000001,
+            2.3974170000000004,
+            55.294375,
+            1.04225
+          ],
+          "worst_frame_vsb_pa_channel_tuner_carrier_sync_decode_sound_ms": [
+            3.382625,
+            4.770957999999999,
+            4.370417,
+            8.376708,
+            12.050708,
+            21.467125,
+            0.861
+          ]
+        },
+        {
+          "injected_stalls": false,
+          "maximum_delivery_overhead_ms": 0.059791999999996015,
+          "maximum_presentation_gap_ms": 46.201959,
+          "maximum_presentation_lateness_ms": 10.641666666671767,
+          "maximum_production_ms": 47.657375,
+          "maximum_render_ms": 47.635499,
+          "media_speed": 1.0000886726772904,
+          "playback_rate": 1,
+          "presented_frames": 916,
+          "produced_frames": 918,
+          "production_deadline_misses": 1,
+          "skipped_frames": 0,
+          "system": "NTSC-M",
+          "underrun_samples": 0,
+          "visible_window": true,
+          "wall_seconds": 30.002672916,
+          "worst_frame_source_encode_rf_image_ms": [
+            1.857458,
+            4.319500000000001,
+            40.551458,
+            0.9070830000000001
+          ],
+          "worst_frame_vsb_pa_channel_tuner_carrier_sync_decode_sound_ms": [
+            6.944208000000001,
+            11.672833,
+            8.586541,
+            5.740834,
+            1.722,
+            5.1122499999999995,
+            0.758417
+          ]
+        }
+      ]
+    }
+  ]
+}
