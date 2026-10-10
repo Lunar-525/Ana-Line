@@ -38,9 +38,11 @@ struct TVStatusText: View {
         HStack(spacing: 6) {
             Text(state.status).foregroundStyle(.secondary).lineLimit(1).textSelection(.enabled).help(state.status)
             Text(String(format: "%.1fx",state.playbackRate))
+                .monospacedDigit().fixedSize()
                 .foregroundStyle(Self.isNormalSpeed(state.playbackRate) ? Color.green : .red)
             if state.droppedFrames > 0 {
                 Text("⚠ DROP \(state.droppedFrames)").foregroundStyle(.red)
+                    .monospacedDigit().fixedSize()
                     .accessibilityLabel(L("Frames dropped") + " \(state.droppedFrames)")
             }
         }.font(.caption)

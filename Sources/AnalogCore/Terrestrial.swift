@@ -489,6 +489,9 @@ public struct TerrestrialReceiver: Sendable {
         guard input.system == system else { throw TVError.invalidSignal }
         try settings.validate(rate: input.sampleRate)
         let s = system.video, rate = input.sampleRate, count = input.i.count
+        // Display the received RF in fixed transmitter coordinates. Tuning and
+        // IF filtering below affect reception, not the spectrum's frequency axis.
+        let spectrum = spectrumAnalyzer.analyze(i: input.i, q: input.q, rate: rate)
         // Tune the complex RF signal before the IF filter; detuning therefore changes
         // the signal's position within the passband, even when AFC can track its carrier.
         let step = -2 * Double.pi * Double(settings.tuningOffsetKHz) * 1000 / rate
@@ -522,7 +525,6 @@ public struct TerrestrialReceiver: Sendable {
         let ai = filtered.1[0], bi = filtered.1[1], aq = filtered.1[2], bq = filtered.1[3]
         vDSP_vsub(bq,1,ai,1,&re,1,vDSP_Length(count))
         vDSP_vadd(bi,1,aq,1,&im,1,vDSP_Length(count))
-        let spectrum = spectrumAnalyzer.analyze(i: re, q: im, rate: rate)
         let tuned = ContinuousClock.now
         // Coarse AFC uses measured, unwrapped phase; it does not read transmitter
         // frequency or synchronization metadata. Capture range is deliberately finite.

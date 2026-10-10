@@ -479,7 +479,8 @@ final class PreviewModel: ObservableObject {
                             if outputStarted {
                                 let next = TVPlaybackPacing.nextFrame(after: Int64((time*standard.frameRate).rounded()),
                                     consumedSamples: pcmQueue.snapshot.consumed,startSample: startSample,standard: standard,
-                                    leadSeconds: min(Double(capacity+2)*standard.frameDuration,(recentCosts.max() ?? standard.frameDuration)*1.1))
+                                    leadSeconds: buffer.queuedFrames == 0
+                                        ? min(Double(capacity+2)*standard.frameDuration,(recentCosts.max() ?? standard.frameDuration)*1.1) : 0)
                                 if Double(next)/standard.frameRate > lastTime+1e-7 { exhausted = true; break }
                                 time = Double(next)/standard.frameRate
                             }

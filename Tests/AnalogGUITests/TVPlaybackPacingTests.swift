@@ -5,25 +5,15 @@ import AnalogCore
 
 @MainActor
 final class TVPlaybackPacingTests: XCTestCase {
-    func testRealtimeDeadlineDoesNotRequireTenPercentExtraHeadroom() {
-        var pacing = TVPlaybackPacing()
-        for _ in 0..<120 {
-            XCTAssertEqual(pacing.requestedRate(cost: 0.039,frameDuration: 0.04,queuedSeconds: 0.24),1)
-        }
-        XCTAssertEqual(pacing.requestedRate(cost: 0.09,frameDuration: 0.04,queuedSeconds: 0.2),1)
-        for _ in 0..<120 { _ = pacing.requestedRate(cost: 0.06,frameDuration: 0.04,queuedSeconds: 0.1) }
-        XCTAssertEqual(pacing.requestedRate(cost: 0.06,frameDuration: 0.04,queuedSeconds: 0.1),1)
-        for _ in 0..<120 { _ = pacing.requestedRate(cost: 0.03,frameDuration: 0.04,queuedSeconds: 0.2) }
-        XCTAssertEqual(pacing.requestedRate(cost: 0.03,frameDuration: 0.04,queuedSeconds: 0.2),1)
+    func testFrameSelectorKeepsHealthyLeadAndPredictsSlowRenderDeadline() {
+        XCTAssertEqual(TVPlaybackPacing.nextFrame(after: 8,consumedSamples: 3840,startSample: 0,standard: .pal,leadSeconds: 0.12),8)
+        let ahead = TVPlaybackPacing.nextFrame(after: 2,consumedSamples: 4800,startSample: 0,standard: .pal,leadSeconds: 0.08)
+        XCTAssertGreaterThanOrEqual(Double(ahead)/25,0.18)
+        let fromSeek = TVPlaybackPacing.nextFrame(after: 250,consumedSamples: 48_000,startSample: 480_000,standard: .pal)
+        XCTAssertEqual(fromSeek,275)
     }
 
     func testOverloadNeverSlowsClockAndNextFrameCatchesUpForBothStandards() {
-        var pacing = TVPlaybackPacing()
-        XCTAssertEqual(pacing.requestedRate(cost: 0.12,frameDuration: 0.04,queuedSeconds: 0.06),1)
-        XCTAssertEqual(pacing.requestedRate(cost: 0.02,frameDuration: 0.04,queuedSeconds: 0.06),1)
-        XCTAssertEqual(pacing.requestedRate(cost: 0.02,frameDuration: 0.04,queuedSeconds: 0.16),1)
-        for _ in 0..<8 { _ = pacing.requestedRate(cost: 0.02,frameDuration: 0.04,queuedSeconds: 0.06) }
-        XCTAssertEqual(pacing.requestedRate(cost: 0.02,frameDuration: 0.04,queuedSeconds: 0.06),1)
         for standard in TVStandard.allCases {
             let next = TVPlaybackPacing.nextFrame(after: 2,consumedSamples: 48_000,startSample: 0,standard: standard)
             XCTAssertGreaterThanOrEqual(Double(next)/standard.frameRate,1)

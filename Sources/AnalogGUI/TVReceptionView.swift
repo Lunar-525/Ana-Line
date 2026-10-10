@@ -85,9 +85,17 @@ struct TVReceptionView: View {
                 }.foregroundStyle(TVInstrumentPalette.ink)
                 TVSpectrumPlot(history: sound ? model.tvSoundSpectrum : model.tvVisionSpectrum,
                     fallbackRate: sound ? 384_000 : model.tvStandard.sampleRate,
-                    fallbackCenter: sound ? model.terrestrialSystem.soundCarrierHz-Double(model.tvChannel.tuningOffsetKHz)*1000 : 0,
-                    carrierHz: sound ? model.terrestrialSystem.soundCarrierHz-Double(model.tvChannel.tuningOffsetKHz)*1000 : -Double(model.tvChannel.tuningOffsetKHz)*1000,
-                    noAudio: sound && !model.tvHasAudio)
+                    fallbackCenter: sound ? model.terrestrialSystem.soundCarrierHz : 0,
+                    tuning: TVSpectrumTuning(offsetHz: Double(model.tvChannel.tuningOffsetKHz)*1000,
+                        bandwidthHz: Double(model.tvChannel.rfBandwidthMHz)*1e6,
+                        carrierHz: sound ? model.terrestrialSystem.soundCarrierHz : 0),
+                    noAudio: sound && !model.tvHasAudio,
+                    onTuningChange: { next in
+                        var channel = model.tvChannel
+                        channel.tuningOffsetKHz = Float(next.offsetHz/1000)
+                        channel.rfBandwidthMHz = Float(next.bandwidthHz/1e6)
+                        if channel != model.tvChannel { model.tvChannel = channel }
+                    })
             }.frame(maxWidth: .infinity,maxHeight: .infinity)
         }.padding(.horizontal,23).padding(.vertical,10).frame(height: 174)
             .background(TVRackHousing(finish: .transmitter))
@@ -163,10 +171,21 @@ private struct SpectrumTabStyle: ButtonStyle {
     }
 }
 
+/// Both branches share the asymmetric VSB IF: -1.25 MHz to bandwidth-1.25 MHz
+/// around the tuned vision reference. FM shows a fixed slice around its carrier.
+struct TVSpectrumTuning {
+    let offsetHz: Double, bandwidthHz: Double, carrierHz: Double
+    var indicatorHz: Double { carrierHz + offsetHz }
+    var lowerHz: Double { offsetHz - 1_250_000 }
+    var upperHz: Double { lowerHz + bandwidthHz }
+}
+
 private struct TVSpectrumPlot: View {
     @ObservedObject var history: TVSpectrumHistory
-    let fallbackRate: Double, fallbackCenter: Double, carrierHz: Double
+    let fallbackRate: Double, fallbackCenter: Double
+    let tuning: TVSpectrumTuning
     let noAudio: Bool
+    let onTuningChange: (TVSpectrumTuning) -> Void
     private var rate: Double { history.spectrum?.sampleRate ?? fallbackRate }
     private var center: Double { history.spectrum?.centerHz ?? fallbackCenter }
     var body: some View {
@@ -174,10 +193,14 @@ private struct TVSpectrumPlot: View {
             HStack {
                 Text("RX · MHz")
                 Spacer()
+                Text(String(format: "IF %.2f MHz", tuning.bandwidthHz/1e6))
+                    .foregroundStyle(TVInstrumentPalette.ink)
+                Spacer()
                 Text(history.spectrum.map { String(format: "RBW %.2f kHz", $0.resolutionHz/1000) } ?? "dBFS/bin")
             }.font(.system(size: 8,design: .monospaced)).foregroundStyle(TVInstrumentPalette.muted).lineLimit(1)
             GeometryReader { g in
                 let traceHeight: CGFloat = 32
+                let axisCenter = center, axisRate = rate
                 ZStack(alignment: .topLeading) {
                     TVInstrumentPalette.screen
                     if let image = history.image {
@@ -190,11 +213,6 @@ private struct TVSpectrumPlot: View {
                             let x = size.width*CGFloat(tick)/4
                             var grid = Path(); grid.move(to: CGPoint(x: x, y: 0)); grid.addLine(to: CGPoint(x: x, y: size.height))
                             context.stroke(grid, with: .color(.white.opacity(0.12)), lineWidth: 0.5)
-                        }
-                        let carrierX = CGFloat((carrierHz-center)/rate + 0.5)*size.width
-                        if carrierX >= 0 && carrierX <= size.width {
-                            var marker = Path(); marker.move(to: CGPoint(x: carrierX, y: 0)); marker.addLine(to: CGPoint(x: carrierX, y: size.height))
-                            context.stroke(marker, with: .color(.white.opacity(0.45)), style: StrokeStyle(lineWidth: 0.7, dash: [3,3]))
                         }
                         var trace = Path()
                         for (index, db) in history.trace.enumerated() {
@@ -209,6 +227,40 @@ private struct TVSpectrumPlot: View {
                     // A single LCD face covers the waveform and history. OSD
                     // labels are drawn above it so the small type stays legible.
                     TVLCDSurface()
+                    Canvas { context, size in
+                        func x(_ hz: Double) -> CGFloat { CGFloat((hz-axisCenter)/axisRate + 0.5)*size.width }
+                        let left = x(tuning.lowerHz), right = x(tuning.upperHz)
+                        let visibleLeft = max(0,left), visibleRight = min(size.width,right)
+                        if visibleRight > visibleLeft {
+                            context.fill(Path(CGRect(x: visibleLeft,y: 0,
+                                width: visibleRight-visibleLeft,height: size.height)),
+                                with: .color(TVInstrumentPalette.ink.opacity(0.045)))
+                            // SDR passband bracket; caps appear only at actual
+                            // edges, so a cropped FM view does not imply a narrow IF.
+                            var bracket = Path()
+                            bracket.move(to: CGPoint(x: visibleLeft,y: 6))
+                            bracket.addLine(to: CGPoint(x: visibleRight,y: 6))
+                            for edge in [left,right] where edge >= 0 && edge <= size.width {
+                                bracket.move(to: CGPoint(x: edge,y: 6))
+                                bracket.addLine(to: CGPoint(x: edge,y: 13))
+                            }
+                            context.stroke(bracket,with: .color(TVInstrumentPalette.ink.opacity(0.85)),lineWidth: 1)
+                        }
+                        let markerX = x(tuning.indicatorHz)
+                        if markerX >= 0 && markerX <= size.width {
+                            var marker = Path()
+                            marker.move(to: CGPoint(x: markerX,y: 13))
+                            marker.addLine(to: CGPoint(x: markerX,y: size.height))
+                            context.stroke(marker,with: .color(TVInstrumentPalette.amber),
+                                style: StrokeStyle(lineWidth: 1,dash: [3,3]))
+                            var pointer = Path()
+                            pointer.move(to: CGPoint(x: markerX-3,y: 1))
+                            pointer.addLine(to: CGPoint(x: markerX+3,y: 1))
+                            pointer.addLine(to: CGPoint(x: markerX,y: 6))
+                            pointer.closeSubpath()
+                            context.fill(pointer,with: .color(TVInstrumentPalette.amber))
+                        }
+                    }.allowsHitTesting(false)
                     if history.image == nil {
                         Text(noAudio ? L("No audio track") : L("Waiting for RX samples"))
                             .font(.system(size: 9,design: .monospaced)).foregroundStyle(TVInstrumentPalette.muted)
@@ -222,6 +274,8 @@ private struct TVSpectrumPlot: View {
                         Text(L("Now")); Spacer(); Text("−10 s")
                     }.font(.system(size: 8, design: .monospaced)).foregroundStyle(.white.opacity(0.7))
                         .padding(3).frame(width: g.size.width, height: g.size.height-traceHeight, alignment: .trailing).offset(y: traceHeight)
+                    TVSpectrumDragSurface(tuning: tuning,centerHz: axisCenter,sampleRate: axisRate,
+                        onChange: onTuningChange)
                 }.clipped().overlay(Rectangle().stroke(.black,lineWidth: 2))
                     .overlay(Rectangle().stroke(.white.opacity(0.07),lineWidth: 0.5).padding(1))
             }
@@ -239,7 +293,7 @@ private struct TVSpectrumPlot: View {
                 Text("↓ 10 s").help(L("Newest at top · 10 s history"))
             }.font(.system(size: 7,design: .monospaced)).foregroundStyle(TVInstrumentPalette.muted)
         }.accessibilityElement(children: .ignore)
-            .help(L("Measured after tuning / RF front-end filtering, before AGC and demodulation. Dashed line: nominal carrier. Fixed color scale; blank rows have no measurement."))
+            .help(L("Received RF before tuning, IF filtering and AGC. Dashed line: tuning position. Bracket: shared IF passband. Frequencies relative to the transmitted vision carrier. Fixed color scale; blank rows have no measurement."))
             .accessibilityLabel(L("RX spectrum / waterfall"))
             .accessibilityValue(history.image == nil ? L("Waiting for RX samples") : String(format: "%.2f s · RBW %.2f kHz", history.latestTime ?? 0, (history.spectrum?.resolutionHz ?? 0)/1000))
     }
@@ -250,7 +304,7 @@ private struct TVSpectrumPlot: View {
 private struct TVLCDSurface: View {
     @Environment(\.displayScale) private var displayScale
     var body: some View {
-        Rectangle().fill(ImagePaint(image: Image(decorative: Self.mask,scale: 2).interpolation(.none)))
+        Rectangle().fill(ImagePaint(image: Image(decorative: Self.mask,scale: 8).interpolation(.none)))
             .blendMode(.multiply)
             .overlay {
                 Rectangle().strokeBorder(.black.opacity(0.22),lineWidth: 1 / max(1,displayScale))
@@ -258,16 +312,16 @@ private struct TVLCDSurface: View {
             .allowsHitTesting(false).accessibilityHidden(true)
     }
     private static let mask: CGImage = {
-        let width = 6, height = 6
+        let width = 24, height = 24
         let subpixels: [[UInt8]] = [[255,218,208],[208,255,218],[208,218,255]]
         var pixels = [UInt8](repeating: 255,count: width*height*4)
         for y in 0..<height {
             for x in 0..<width {
-                // Paired columns form R/G/B apertures; their dim edges and
-                // the last row form the fine transistor/pixel matrix.
-                let shade = (x%2 == 1 ? 0.55 : 1) * (y == height-1 ? 0.45 : 1)
+                // Keep the 3 pt cell pitch, widening the dim matrix gaps
+                // from 0.5 pt to 0.625 pt without enlarging the pixels.
+                let shade = (x%8 >= 3 ? 0.55 : 1) * (y >= height-5 ? 0.45 : 1)
                 for channel in 0..<3 {
-                    pixels[(y*width+x)*4+channel] = UInt8(Double(subpixels[x/2][channel])*shade)
+                    pixels[(y*width+x)*4+channel] = UInt8(Double(subpixels[x/8][channel])*shade)
                 }
             }
         }

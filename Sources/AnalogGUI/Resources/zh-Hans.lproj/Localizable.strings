@@ -190,7 +190,8 @@
 "Waiting for RX samples" = "等待 RX 接收采样";
 "Now" = "当前";
 "Newest at top · 10 s history" = "最新在顶部 · 最近 10 秒";
-"Measured after tuning / RF front-end filtering, before AGC and demodulation. Dashed line: nominal carrier. Fixed color scale; blank rows have no measurement." = "测量调谐 / 射频前端滤波后、AGC 与解调前的真实信号。虚线为标称载波；使用固定色标，空白行表示未采样。";
+"Received RF before tuning, IF filtering and AGC. Dashed line: tuning position. Bracket: shared IF passband. Frequencies relative to the transmitted vision carrier. Fixed color scale; blank rows have no measurement." = "测量调谐、中频滤波与 AGC 前的接收射频。虚线为调谐位置，括号为公共 IF 通带；频率相对发射图像载波。使用固定色标，空白行表示未采样。";
+"Drag the marker or bracket to tune · drag either edge to resize IF · Shift for fine control. The left edge also adjusts tuning to keep the right edge fixed." = "拖动指示线或括号横线调谐；拖动两端调整 IF 带宽，按住 Shift 精调。左端拖动同时调整调谐位置，以保持右端固定。";
 "Propagation" = "传播场景";
 "Enable scene" = "启用场景";
 "2D elevation profile · height exaggerated" = "二维高程剖面 · 高度夸张显示";

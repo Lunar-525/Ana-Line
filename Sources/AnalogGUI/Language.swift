@@ -62,15 +62,15 @@ struct AnaLineSettingsView: View {
     var body: some View {
         VStack(alignment: .leading,spacing: 16) {
             HStack {
-            Text(L("Language")); Spacer()
-            Picker("", selection: Binding(
-                get: { languageStore.language },
-                set: { languageStore.setLanguage($0) }
-            )) {
-                ForEach(AppLanguage.allCases) { language in
-                    Text(language.title).tag(language)
-                }
-            }.labelsHidden().frame(width: 160)
+                Text(L("Language")); Spacer()
+                Picker("", selection: Binding(
+                    get: { languageStore.language },
+                    set: { languageStore.setLanguage($0) }
+                )) {
+                    ForEach(AppLanguage.allCases) { language in
+                        Text(language.title).tag(language)
+                    }
+                }.labelsHidden().frame(width: 160)
             }
             Text(L("Choose the language used by Ana-Line's interface."))
                 .font(.caption)

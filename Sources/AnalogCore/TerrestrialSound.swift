@@ -130,6 +130,9 @@ public struct TerrestrialSoundEngine: Sendable {
         TVTransmitterSettings.deliver(i: &i,q: &q,settings: settings.transmitter)
         (i,q) = channel.transmit(i: i,q: q,rate: rate,carrierOffsetHz: system.soundCarrierHz,
                                 noiseReferenceRate: system.video.sampleRate,time: Double(rfStart)/rate,settings: settings)
+        // Fixed RF coordinates, after propagation but before the tuner / IF.
+        let spectrum = spectrumAnalyzer.analyze(i: i, q: q, rate: rate,
+            centerHz: system.soundCarrierHz)
 
         // Project the common RF front-end passband onto this carrier's narrow band.
         // Tuning changes the sound carrier's position relative to the channel edges.
@@ -149,9 +152,6 @@ public struct TerrestrialSoundEngine: Sendable {
         // Apply the identical histories to Q via the independently retained branch below.
         let filteredQ = filterFrontQ(q)
         for n in i.indices { i[n] = ai[n]-filteredQ.1[n]; q[n] = bi[n]+filteredQ.0[n] }
-        // Calibrated RX reference stays ahead of AGC / ADC overload, like vision.
-        let spectrum = spectrumAnalyzer.analyze(i: i, q: q, rate: rate,
-            centerHz: system.soundCarrierHz - Double(settings.tuningOffsetKHz)*1000)
         // Common slow front-end AGC ahead of the FM limiter. Fixed ADC noise and
         // overload make gain excursions audible; linear gain alone cancels in FM.
         if settings.receiverDamage.agcEnabled && settings.automaticGain {

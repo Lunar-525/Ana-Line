@@ -34,7 +34,9 @@ transmitter spectral mask. The existing PAL picture encoder is limited to 5 MHz.
   frame boundaries. This manual path adds to the optional scene's ground/clutter paths.
 - Tuning: receiver LO offset applied to I/Q before its complex IF filter. Filter lower
   edge is -1.25 MHz; upper edge is configured channel bandwidth minus 1.25 MHz.
-  Tuning therefore affects both carrier capture and the received spectrum.
+  Tuning affects carrier capture and the signal after IF filtering. The RX display
+  taps received RF before tuning / IF filtering, using a fixed frequency axis;
+  its tuning marker and asymmetric IF bracket move instead of the waveform.
 - AFC capture range: +/-150 kHz. Coarse frequency is measured from unwrapped received
   phase after the initial filter transient; a narrow proportional carrier PLL follows
   phase. The decoder does not receive transmitter carrier phase/frequency as an oracle.

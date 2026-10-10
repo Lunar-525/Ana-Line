@@ -24,25 +24,30 @@ final class TVSpectrumTests: XCTestCase {
         XCTAssertEqual(spectrum.centerHz, 6_500_000)
         XCTAssertNil(analyzer.analyze(i: [0],q: [0],rate: 384_000))
     }
-    func testSoundTapTracksAttenuationAndCommonFrontEndBandwidth() throws {
+    func testSoundRFTapStaysFixedWhileIFRejectsTheCarrier() throws {
         var settings = TerrestrialSettings(system: .palDK)
         settings.carrierToNoiseDB = 120
         let pcm = [Float](repeating: 0, count: TVSoundClock.count(frame: 0,standard: .pal))
-        func power(_ settings: TerrestrialSettings) throws -> Double {
+        func measure(_ settings: TerrestrialSettings) throws -> (Double,Float) {
             var engine = TerrestrialSoundEngine(system: .palDK)
             let result = try engine.process(pcm,frameIndex: 0,settings: settings)
             let spectrum = try XCTUnwrap(result.spectrum)
             XCTAssertEqual(spectrum.centerHz,6_500_000)
-            return 10*log10(spectrum.powerDB.reduce(Double(0)) { $0 + pow(10,Double($1)/10) })
+            return (10*log10(spectrum.powerDB.reduce(Double(0)) { $0 + pow(10,Double($1)/10) }),result.carrierDB)
         }
-        let strong = try power(settings)
+        let strong = try measure(settings)
         settings.signalDB = -20
-        XCTAssertEqual(strong - (try power(settings)),20,accuracy: 0.01)
+        XCTAssertEqual(strong.0 - (try measure(settings)).0,20,accuracy: 0.01)
         settings.signalDB = 0; settings.rfBandwidthMHz = 1
-        XCTAssertLessThan(try power(settings),strong-40,
-            "FM waterfall must measure the actual shared front-end rejection")
+        let rejected = try measure(settings)
+        XCTAssertEqual(rejected.0,strong.0,accuracy: 0.01,
+            "The received RF remains visible outside the selected IF passband")
+        XCTAssertLessThan(rejected.1,strong.1-40,
+            "Moving the display tap must preserve actual front-end rejection")
+        settings.rfBandwidthMHz = 8; settings.tuningOffsetKHz = 100
+        XCTAssertEqual((try measure(settings)).0,strong.0,accuracy: 0.01)
     }
-    func testMeasuredVisionSpectrumRespondsToTuningAndSignalLevel() throws {
+    func testVisionRFTapKeepsFrequencyAndPowerUnderRetuning() throws {
         let standard = TVStandard.ntsc
         let samples = Int(standard.sampleOffset(frame: 1))
         let rf = TelevisionRF(system: .ntscM, frameIndex: 0, sampleRate: standard.sampleRate,
@@ -53,7 +58,16 @@ final class TVSpectrumTests: XCTestCase {
         let strong = try XCTUnwrap(receiver.receive(rf, settings: settings).visionSpectrum)
         let peak = try XCTUnwrap(strong.powerDB.indices.max { strong.powerDB[$0] < strong.powerDB[$1] })
         let frequency = Double(peak-strong.powerDB.count/2)*strong.binHz
-        XCTAssertEqual(frequency, -100_000, accuracy: strong.binHz)
+        XCTAssertEqual(strong.centerHz,0)
+        XCTAssertEqual(frequency, 0, accuracy: strong.binHz)
+        for offset in [Float(-1500),0,1500] {
+            settings.tuningOffsetKHz = offset; settings.rfBandwidthMHz = 0.5
+            var retunedReceiver = TerrestrialReceiver(system: .ntscM)
+            let retuned = try XCTUnwrap(retunedReceiver.receive(rf,settings: settings).visionSpectrum)
+            XCTAssertEqual(retuned.centerHz,strong.centerHz)
+            XCTAssertEqual(retuned.powerDB,strong.powerDB,
+                "LO and IF changes must not translate or filter the RF display")
+        }
         var weaker = rf; weaker.i = weaker.i.map { $0*0.1 }
         var weakReceiver = TerrestrialReceiver(system: .ntscM)
         let weak = try XCTUnwrap(weakReceiver.receive(weaker,settings: settings).visionSpectrum)

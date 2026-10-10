@@ -103,7 +103,7 @@ final class TVRackTests: XCTestCase {
             let powers = (0..<512).map { bin -> Float in
                 let f = (Double(bin)/512-0.5)*model.tvStandard.sampleRate/1e6
                 let floor = -88 + 5 * sin(Double(bin)*0.3+Double(row)*0.15)
-                let carrier = 60 * exp(-pow((f-1.5)/0.08,2))
+                let carrier = 60 * exp(-pow(f/0.08,2))
                 let sideband = 40 * exp(-pow((f-3)/2.5,2))
                 return Float(floor + carrier + sideband)
             }

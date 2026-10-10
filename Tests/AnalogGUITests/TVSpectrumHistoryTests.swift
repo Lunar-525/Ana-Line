@@ -4,6 +4,16 @@ import XCTest
 
 @MainActor
 final class TVSpectrumHistoryTests: XCTestCase {
+    func testTuningIndicatorAndSharedIFEdgesUseFixedRFCoordinates() {
+        let vision = TVSpectrumTuning(offsetHz: 230_000,bandwidthHz: 8_000_000,carrierHz: 0)
+        XCTAssertEqual(vision.indicatorHz,230_000)
+        XCTAssertEqual(vision.lowerHz,-1_020_000)
+        XCTAssertEqual(vision.upperHz,6_980_000)
+        let sound = TVSpectrumTuning(offsetHz: 230_000,bandwidthHz: 8_000_000,carrierHz: 6_500_000)
+        XCTAssertEqual(sound.indicatorHz,6_730_000)
+        XCTAssertEqual(sound.lowerHz,vision.lowerHz)
+        XCTAssertEqual(sound.upperHz,vision.upperHz,"FM uses the same IF, not a symmetric sound passband")
+    }
     func testPauseSeekAndChangingFrequencyAxisDoNotInventHistory() throws {
         let history = TVSpectrumHistory()
         let first = TVSpectrum(sampleRate: 16_000_000, centerHz: 0,

@@ -2,7 +2,8 @@ import Accelerate
 import Foundation
 
 /// FFT-shifted, window-energy-normalized power per bin. Frequencies are relative
-/// to the nominal vision tuning reference; this is an actual pre-AGC IQ tap.
+/// to the nominal transmitted vision carrier; this is an actual received RF
+/// IQ tap, before receiver tuning, IF filtering, and AGC.
 public struct TVSpectrum: Sendable {
     public let sampleRate: Double
     public let centerHz: Double
