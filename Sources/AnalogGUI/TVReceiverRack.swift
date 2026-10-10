@@ -45,6 +45,26 @@ struct TVTunerAGCRack: View {
                     TVRotaryParameter(name: "Receiver gain · dB",value: $state.tvChannel.manualGainDB,
                         range: -12...60,initial: 0,step: 0.1,unit: "dB",active: !state.tvChannel.automaticGain)
                 }
+                Divider().overlay(.white.opacity(0.12))
+                Text(L("Shared front end"))
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
+                Toggle(L("Front-end overload / nonlinearity"),isOn: $state.tvChannel.frontEnd.enabled)
+                HStack(spacing: 12) {
+                    TVRotaryParameter(name: "Front-end gain · dB",value: $state.tvChannel.frontEnd.gainDB,
+                        range: -20...60,initial: 0,step: 0.5,unit: "dB",digits: 1)
+                    TVRotaryParameter(name: "Input saturation · dB",value: $state.tvChannel.frontEnd.inputSaturationDB,
+                        range: -40...60,initial: 12,step: 1,unit: "dB",digits: 0,active: state.tvChannel.frontEnd.enabled)
+                    TVRotaryParameter(name: "IF saturation · dB",value: $state.tvChannel.frontEnd.ifSaturationDB,
+                        range: -40...60,initial: 12,step: 1,unit: "dB",digits: 0,active: state.tvChannel.frontEnd.enabled)
+                }
+                Picker(L("Sound detection"),selection: $state.tvChannel.frontEnd.soundDetection) {
+                    Text(L("Split sound")).tag(TVSoundDetectionMode.splitSound)
+                    Text(L("Intercarrier")).tag(TVSoundDetectionMode.intercarrier)
+                }.pickerStyle(.segmented)
+                Picker(L("Sound notch"),selection: $state.tvChannel.frontEnd.soundNotchPolicy) {
+                    Text(L("Suppress")).tag(TVSoundNotchPolicy.suppressed)
+                    Text(L("Bypass")).tag(TVSoundNotchPolicy.bypassed)
+                }.pickerStyle(.segmented)
             }
         }
     }

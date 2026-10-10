@@ -1,5 +1,29 @@
 import Foundation
 import Accelerate
+import Dispatch
+
+/// Carrier shift plus add, split across output ranges. Each worker restarts its
+/// oscillator from the exact phase at its first sample, so the parallel result
+/// matches the serial recurrence to rounding and never accumulates phase error.
+private struct TVSoundChannelNCO: @unchecked Sendable {
+    let ri: UnsafeBufferPointer<Float>, rq: UnsafeBufferPointer<Float>
+    let vi: UnsafeMutableBufferPointer<Float>, vq: UnsafeMutableBufferPointer<Float>
+    let startPhase: Double, step: Double
+    func run(_ range: Range<Int>) {
+        var c = cos(startPhase+step*Double(range.lowerBound))
+        var s = sin(startPhase+step*Double(range.lowerBound))
+        let dc = cos(step), ds = sin(step)
+        let a = ri.baseAddress!, b = rq.baseAddress!
+        let x = vi.baseAddress!, y = vq.baseAddress!
+        for n in range {
+            let ra = Double(a[n]), rb = Double(b[n])
+            x[n] += Float(ra*c-rb*s)
+            y[n] += Float(ra*s+rb*c)
+            let next = c*dc-s*ds; s = c*ds+s*dc; c = next
+            if n & 1023 == 0 { let norm = hypot(c,s); c /= norm; s /= norm }
+        }
+    }
+}
 
 /// Linear channel combiner. Vision stays on its own 4fsc grid at the 0 Hz
 /// reference; the narrowband sound envelope is band-limited up to that grid and
@@ -36,27 +60,24 @@ public struct TVChannelModulator: Sendable {
             let resampled = soundResampler!.process(i: sound.i,q: sound.q,inputStart: soundStart,
                                                     outputStart: visionFirstSample,outputCount: i.count)
             let shiftStep = 2*Double.pi*system.soundCarrierHz/sampleRate
-            var c = cos(ncoPhase), s = sin(ncoPhase)
-            let dc = cos(shiftStep), ds = sin(shiftStep)
+            let count = i.count
             i.withUnsafeMutableBufferPointer { ip in
                 q.withUnsafeMutableBufferPointer { qp in
                     resampled.0.withUnsafeBufferPointer { ri in
                         resampled.1.withUnsafeBufferPointer { rq in
-                            let pi = ip.baseAddress!, pq = qp.baseAddress!
-                            let si = ri.baseAddress!, sq = rq.baseAddress!
-                            let count = ip.count
-                            for n in 0..<count {
-                                let a = Double(si[n]), b = Double(sq[n])
-                                pi[n] += Float(a*Double(c)-b*Double(s))
-                                pq[n] += Float(a*Double(s)+b*Double(c))
-                                let next = c*dc-s*ds; s = c*ds+s*dc; c = next
-                                if n & 1023 == 0 { let norm = hypot(c,s); c /= norm; s /= norm }
-                            }
+                            let work = TVSoundChannelNCO(ri: ri,rq: rq,vi: ip,vq: qp,
+                                startPhase: ncoPhase,step: shiftStep)
+                            let workers = min(8,max(1,count/65_536))
+                            if workers > 1 {
+                                DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                                    work.run(worker*count/workers ..< (worker+1)*count/workers)
+                                }
+                            } else { work.run(0..<count) }
                         }
                     }
                 }
             }
-            ncoPhase = atan2(s,c)
+            ncoPhase = (ncoPhase+shiftStep*Double(count)).truncatingRemainder(dividingBy: 2*Double.pi)
         }
         return TVChannelIQ(system: system,frameIndex: frameIndex,firstSampleIndex: visionFirstSample,
                            sampleRate: sampleRate,i: i,q: q)

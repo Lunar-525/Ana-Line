@@ -33,6 +33,7 @@ final class TVControlState: ObservableObject {
         next.manualGainDB = defaults.manualGainDB
         next.receiverDamage = defaults.receiverDamage
         next.decoder = defaults.decoder
+        next.frontEnd = defaults.frontEnd
         tvChannel = next
     }
     func setSceneEchoGain(_ value: Float) {

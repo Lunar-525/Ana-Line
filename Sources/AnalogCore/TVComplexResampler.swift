@@ -1,4 +1,45 @@
 import Foundation
+import Dispatch
+
+/// One disjoint output range per synchronous worker. Inputs and the phase bank
+/// are read-only; each worker writes only its own output samples, so the
+/// per-sample arithmetic and therefore the result stay bit-identical.
+private struct TVResamplerWork: @unchecked Sendable {
+    let x: UnsafeBufferPointer<Float>
+    let y: UnsafeBufferPointer<Float>
+    let table: UnsafeBufferPointer<Float>
+    let outI: UnsafeMutableBufferPointer<Float>
+    let outQ: UnsafeMutableBufferPointer<Float>
+    let tapCount: Int, phaseCount: Int, kernelRadius: Int
+    let ratio: Double
+    let fullStart: Int64
+    let outputStart: Int64
+    func run(_ range: Range<Int>) {
+        let sampleCount = x.count
+        let xb = x.baseAddress!, yb = y.baseAddress!, tb = table.baseAddress!
+        let oi = outI.baseAddress!, oq = outQ.baseAddress!
+        for m in range {
+            let position = Double(outputStart+Int64(m))*ratio
+            let center = position-Double(kernelRadius)
+            let base = center.rounded(.down)
+            let fraction = center-base
+            var phase = Int(fraction*Double(phaseCount))
+            if phase >= phaseCount { phase = phaseCount-1 }
+            if phase < 0 { phase = 0 }
+            let offset = phase*tapCount
+            let first = Int64(base)-Int64(kernelRadius)
+            var si = 0.0, sq = 0.0
+            for k in 0..<tapCount {
+                let local = Int(first+Int64(k)-fullStart)
+                if local >= 0, local < sampleCount {
+                    let weight = Double(tb[offset+k])
+                    si += weight*Double(xb[local]); sq += weight*Double(yb[local])
+                }
+            }
+            oi[m] = Float(si); oq[m] = Float(sq)
+        }
+    }
+}
 
 /// Stateful, band-limited complex resampler. It converts between two arbitrary
 /// rates through a windowed-sinc interpolation kernel, keeps FIR history across
@@ -73,29 +114,15 @@ public struct TVComplexResampler: Sendable {
                 outI.withUnsafeMutableBufferPointer { op in
                     outQ.withUnsafeMutableBufferPointer { oq in
                         weightTable.withUnsafeBufferPointer { wp in
-                            let x = xp.baseAddress!, y = yp.baseAddress!
-                            let sampleCount = fullI.count
-                            let table = wp.baseAddress!
-                            for m in 0..<outputCount {
-                                let position = Double(outputStart+Int64(m))*ratio
-                                let center = position-Double(kernelRadius)
-                                let base = center.rounded(.down)
-                                let fraction = center-base
-                                var phase = Int(fraction*Double(phaseCount))
-                                if phase >= phaseCount { phase = phaseCount-1 }
-                                if phase < 0 { phase = 0 }
-                                let offset = phase*tapCount
-                                let first = Int64(base)-Int64(kernelRadius)
-                                var si = 0.0, sq = 0.0
-                                for k in 0..<tapCount {
-                                    let local = Int(first+Int64(k)-fullStart)
-                                    if local >= 0, local < sampleCount {
-                                        let weight = Double(table[offset+k])
-                                        si += weight*Double(x[local]); sq += weight*Double(y[local])
-                                    }
+                            let work = TVResamplerWork(x: xp,y: yp,table: wp,outI: op,outQ: oq,
+                                tapCount: tapCount,phaseCount: phaseCount,kernelRadius: kernelRadius,
+                                ratio: ratio,fullStart: fullStart,outputStart: outputStart)
+                            let workers = min(8,max(1,outputCount/32_768))
+                            if workers > 1 {
+                                DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                                    work.run(worker*outputCount/workers ..< (worker+1)*outputCount/workers)
                                 }
-                                op[m] = Float(si); oq[m] = Float(sq)
-                            }
+                            } else { work.run(0..<outputCount) }
                         }
                     }
                 }

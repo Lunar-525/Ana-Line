@@ -44,7 +44,7 @@ public actor TVRenderer {
     // interactive QoS across the job and its concurrent filter/sample workers.
     // No process-wide priority or system power setting is changed.
     private let frameQueue = DispatchQueue(label: "AnaLine.TV.Frame",qos: .userInteractive)
-    private var terrestrial = TerrestrialEngine(system: .palDK)
+    private var terrestrial = TVUnifiedChannelEngine(system: .palDK)
     private var simulationFrame: Int64?
     private var simulationSeed: UInt64 = 42
     private let executableSearchPath: String
@@ -185,7 +185,7 @@ public actor TVRenderer {
         guard let video = preparedVideos[standard] else { throw TVVideoError.noVideo }
         endPlayback()
         self.standard = standard; normalizedURL = video.url; duration = video.duration
-        terrestrial = TerrestrialEngine(system: TerrestrialSystem(video: standard))
+        terrestrial = TVUnifiedChannelEngine(system: TerrestrialSystem(video: standard))
         return duration
     }
 
@@ -270,7 +270,7 @@ public actor TVRenderer {
         // Adjacent playback frames retain every FIR, delay line, oscillator and PLL.
         // A seek or paused re-render starts a fresh receiver acquisition.
         if reacquiring {
-            terrestrial = TerrestrialEngine(system: TerrestrialSystem(video: standard), seed: settings.seed)
+            terrestrial = TVUnifiedChannelEngine(system: TerrestrialSystem(video: standard), seed: settings.seed)
             // Seek acquisition uses two frozen-picture pre-roll frames. This settles
             // carrier/AGC loops before a paused preview, without inventing RF lock.
             for prior in settleAfterSeek ? [max(0, frameIndex-2), max(0, frameIndex-1)] : [] {

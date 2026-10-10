@@ -1,4 +1,47 @@
 import Foundation
+import Dispatch
+
+/// Complex rotation split across output ranges; each worker restarts from the
+/// exact phase at its first sample.
+private struct TVComplexShiftWork: @unchecked Sendable {
+    let i: UnsafeBufferPointer<Float>, q: UnsafeBufferPointer<Float>
+    let oi: UnsafeMutableBufferPointer<Float>, oq: UnsafeMutableBufferPointer<Float>
+    let startPhase: Double, step: Double
+    func run(_ range: Range<Int>) {
+        var c = cos(startPhase+step*Double(range.lowerBound))
+        var s = sin(startPhase+step*Double(range.lowerBound))
+        let dc = cos(step), ds = sin(step)
+        let a = i.baseAddress!, b = q.baseAddress!
+        let x = oi.baseAddress!, y = oq.baseAddress!
+        for n in range {
+            let ri = Double(a[n]), rq = Double(b[n])
+            x[n] = Float(ri*c-rq*s)
+            y[n] = Float(ri*s+rq*c)
+            let next = c*dc-s*ds; s = c*ds+s*dc; c = next
+            if n & 1023 == 0 { let norm = hypot(c,s); c /= norm; s /= norm }
+        }
+    }
+}
+
+/// Real-signal down-mix to a complex envelope, split the same way.
+private struct TVRealMixWork: @unchecked Sendable {
+    let v: UnsafeBufferPointer<Float>
+    let oi: UnsafeMutableBufferPointer<Float>, oq: UnsafeMutableBufferPointer<Float>
+    let startPhase: Double, step: Double
+    func run(_ range: Range<Int>) {
+        var c = cos(startPhase+step*Double(range.lowerBound))
+        var s = sin(startPhase+step*Double(range.lowerBound))
+        let dc = cos(step), ds = sin(step)
+        let a = v.baseAddress!, x = oi.baseAddress!, y = oq.baseAddress!
+        for n in range {
+            let sample = Double(a[n])
+            x[n] = Float(sample*c)
+            y[n] = Float(-sample*s)
+            let next = c*dc-s*ds; s = c*ds+s*dc; c = next
+            if n & 1023 == 0 { let norm = hypot(c,s); c /= norm; s /= norm }
+        }
+    }
+}
 
 /// Extracts one companion carrier into the narrowband sound rate. Two modes
 /// share the same stateful resampler:
@@ -49,26 +92,22 @@ public struct TVSoundExtractor: Sendable {
         var shiftedI = [Float](repeating: 0,count: count)
         var shiftedQ = shiftedI
         let step = -2*Double.pi*shiftHz/sampleRate
-        var c = cos(phase), s = sin(phase)
-        let dc = cos(step), ds = sin(step)
+        let workers = min(8,max(1,count/65_536))
         i.withUnsafeBufferPointer { ip in
             q.withUnsafeBufferPointer { qp in
                 shiftedI.withUnsafeMutableBufferPointer { op in
                     shiftedQ.withUnsafeMutableBufferPointer { oq in
-                        let a = ip.baseAddress!, b = qp.baseAddress!
-                        let x = op.baseAddress!, y = oq.baseAddress!
-                        for n in 0..<count {
-                            let ri = Double(a[n]), rq = Double(b[n])
-                            x[n] = Float(ri*Double(c)-rq*Double(s))
-                            y[n] = Float(ri*Double(s)+rq*Double(c))
-                            let next = c*dc-s*ds; s = c*ds+s*dc; c = next
-                            if n & 1023 == 0 { let norm = hypot(c,s); c /= norm; s /= norm }
-                        }
+                        let work = TVComplexShiftWork(i: ip,q: qp,oi: op,oq: oq,startPhase: phase,step: step)
+                        if workers > 1 {
+                            DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                                work.run(worker*count/workers ..< (worker+1)*count/workers)
+                            }
+                        } else { work.run(0..<count) }
                     }
                 }
             }
         }
-        phase = atan2(s,c)
+        phase = (phase+step*Double(count)).truncatingRemainder(dividingBy: 2*Double.pi)
         return resample(complexI: shiftedI,complexQ: shiftedQ,frameIndex: frameIndex,
                         firstSampleIndex: firstSampleIndex)
     }
@@ -85,23 +124,20 @@ public struct TVSoundExtractor: Sendable {
         var mixedI = [Float](repeating: 0,count: count)
         var mixedQ = mixedI
         let step = -2*Double.pi*carrierHz/sampleRate
-        var c = cos(phase), s = sin(phase)
-        let dc = cos(step), ds = sin(step)
+        let workers = min(8,max(1,count/65_536))
         video.withUnsafeBufferPointer { vp in
             mixedI.withUnsafeMutableBufferPointer { op in
                 mixedQ.withUnsafeMutableBufferPointer { oq in
-                    let v = vp.baseAddress!, x = op.baseAddress!, y = oq.baseAddress!
-                    for n in 0..<count {
-                        let sample = Double(v[n])
-                        x[n] = Float(sample*Double(c))
-                        y[n] = Float(-sample*Double(s))
-                        let next = c*dc-s*ds; s = c*ds+s*dc; c = next
-                        if n & 1023 == 0 { let norm = hypot(c,s); c /= norm; s /= norm }
-                    }
+                    let work = TVRealMixWork(v: vp,oi: op,oq: oq,startPhase: phase,step: step)
+                    if workers > 1 {
+                        DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                            work.run(worker*count/workers ..< (worker+1)*count/workers)
+                        }
+                    } else { work.run(0..<count) }
                 }
             }
         }
-        phase = atan2(s,c)
+        phase = (phase+step*Double(count)).truncatingRemainder(dividingBy: 2*Double.pi)
         return resample(complexI: mixedI,complexQ: mixedQ,frameIndex: frameIndex,
                         firstSampleIndex: firstSampleIndex)
     }
