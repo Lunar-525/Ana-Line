@@ -5,7 +5,7 @@
 
 ## 实现状态
 
-已完成（新路径与旧路径并存，默认入口暂未切换）：
+已完成（GUI 渲染已默认走统一通道；`TerrestrialEngine` 保留为标量／对照基线）：
 
 - **第 1 步 · 拆分伴音收发。** 新增 `TVSoundModulator`、`TVSoundDemodulator`（`Sources/AnalogCore/TVSoundModulator.swift`、`TVSoundDemodulator.swift`）。`TerrestrialSoundEngine` 改为组合两者的旧路径基线，行为保持不变。
 - **第 2 步 · 统一时钟、重采样与线性合路。** 新增 `TVChannelClock`／`TVChannelIQ`（`TVChannelSignal.swift`）、有状态带限复数重采样器 `TVComplexResampler`（`TVComplexResampler.swift`）、线性合路器 `TVChannelModulator`（`TVChannelModulator.swift`）。图像载波固定在 0 Hz，伴音搬至 `+soundCarrierHz`。
@@ -13,8 +13,8 @@
 - **第 7 步（部分）· 图像载波选择。** AFC 先前置 250 kHz 载波选择，避免峰值白电平时伴音主导复合矢量而污染测频；PLL 仍跟踪完整信号，保证 `.reference` 与 `.accelerated` 数值一致。
 - **第 8 步（部分）· 伴音陷波。** 检波后加入二阶 IIR 伴音陷波 `TVSoundNotch`，供共同检波路径抑制 4.5／6.5 MHz 拍频。
 - **伴音提取。** 新增 `TVSoundExtractor`：从共同前端输出用连续 NCO 搬频并经带限重采样回到 384 kHz 窄带，再交给 `TVSoundDemodulator`（`projectFrontEnd: false`，即 Split Sound）。
-- **第 6 步（部分）· 会话／GUI 集成与性能验收。** `TVRenderer` 的引擎改为 `TVUnifiedChannelEngine`，GUI 回放直接走统一通道；接收机检修面板加入共同前端增益／过载、Split Sound／Intercarrier 与伴音陷波策略控件，`resetReceiver` 一并复位；新字段随 `TerrestrialSettings` 进入 `TVSessionDocument`（`decodeIfPresent` 兼容旧版）。性能：`TVComplexResampler` 按输出分块并行、搬频 NCO 亦按块并行（每块从该块首样本的精确相位重启）后，GUI 回放（场景＋天气＋PA）PAL 最大生产帧 37.9 ms、NTSC 24.7 ms，均在帧预算（40／33.37 ms）内且 `production_deadline_misses = 0`、无丢帧。
-- **第 5 步（部分）· Intercarrier 与视频滤波。** `TVSoundExtractor` 增加 `extractIntercarrier`：把检波视频与伴音载波混频，得到已与恢复图像载波拍频的伴音包络，公共调谐误差自动抵消。`TVFrontEndSettings.soundDetection` 选择 Split Sound／Intercarrier，`soundNotchPolicy` 选择视频伴音陷波的抑制／旁路。实测两种方式恢复单音一致（PAL 0.25447，NTSC 0.25595），40 kHz 失谐下 Intercarrier 仍正常；陷波对 6.5 MHz 载波抑制 >105 dB 且保留 1 MHz 视频。
+- **第 6 步（部分）· 会话／GUI 集成与性能验收。** `TVRenderer` 的引擎改为 `TVUnifiedChannelEngine`，GUI 回放直接走统一通道；接收机检修面板加入共同前端增益／过载、Split Sound／Intercarrier 与伴音陷波策略控件，`resetReceiver` 一并复位；新字段随 `TerrestrialSettings` 进入 `TVSessionDocument`（`decodeIfPresent` 兼容旧版）。性能：`TVComplexResampler` 按输出分块并行、搬频 NCO 亦按块并行（每块从该块首样本的精确相位重启）后，另将每帧串行的伴音陷波改为借用缓冲区与局部状态的循环，并把重采样／搬频分块并行的上限提高到 12。GUI 回放（场景＋天气＋PA）PAL 最大生产帧 33.9 ms、NTSC 24.2 ms，稳态 `production_deadline_misses = 0`、无丢帧，均在帧预算（40／33.37 ms）内。
+- **第 5 步（部分）· Intercarrier 与视频滤波。** `TVSoundExtractor` 增加 `extractIntercarrier`：把检波视频与伴音载波混频，得到已与恢复图像载波拍频的伴音包络，公共调谐误差自动抵消。`TVFrontEndSettings.soundDetection` 选择 Split Sound／Intercarrier，`soundNotchPolicy` 选择视频伴音陷波的抑制／旁路。实测两种方式恢复单音一致（PAL 0.25447，NTSC 0.25595），40 kHz 失谐下 Intercarrier 仍正常；陷波对 6.5 MHz 载波抑制 >105 dB 且保留 1 MHz 视频；另加可选视频低通（`videoLowpassEnabled`，默认关）与图像／伴音互扰验收测试 `TVInterferenceTests`：非线性共同前端下，伴音对图像的影响从 0.12 增至 0.63（PAL），图像对伴音的影响从 2.9e-4 增至 4.4e-3。
 - **第 4 步（部分）· 共同 RX 增益与非线性。** `TVFrontEndSettings` 提供一次性共同增益（`gainDB`）与可旁路的 RF 输入级、IF 放大级无记忆压缩／AM-PM 模型（`TVReceiverAmplifier`，独立饱和参考与状态）；处理顺序固定为「固定坐标频谱取样 → 共同增益 → 输入级 → 调谐 → IF → IF 级」。`TVFrontEndOutput` 与 `TerrestrialReception` 增加增益／过载／输入电平遥测。`TerrestrialSettings.frontEnd` 使用 `decodeIfPresent` 迁移，旧版会话 JSON 缺字段仍可解码。共同 AGC 采用块反馈：用未平滑的测量目标（`agcTargetDB`）乘性更新共同增益，检波段不再二次施加增益（`reconstructionGain = 1`）。实测 −20 dB 输入时共同增益收敛到 20.0 dB，第 1 帧起锁定。
 
 测试：`TVChannelTests`（时钟连续性、重采样单音／镜像／混叠／跨块拼接、双载波频谱）与 `TVUnifiedChannelTests`（单通道图像锁定、音画同收、窄 IF 拒绝伴音）。
@@ -22,7 +22,7 @@
 尚未实现：
 
 - **第 4 步 · AGC 细节**：启动增益、捕获速度与预卷策略，以及共同 AGC 与前端非线性交互的专项测量尚未完成。
-- **第 5 步 · 视频滤波策略**：可切换伴音陷波与 Intercarrier 提取已就位，但完整视频低通／滤波延迟补偿与 Intercarrier 蜂鸣量化测试尚未实现。
+- **第 5 步 · 滤波延迟／蜂鸣量化**：可选视频低通与互扰测试已就位，但滤波累计延迟的显式补偿与 Intercarrier 蜂鸣的频谱量化指标尚未实现。
 - **第 6 步 · 长期验收**：渲染与 GUI 已切到统一通道，但仍需长时间原生窗口回放、Intercarrier 蜂鸣量化与参考曲线，以及共同 PA 模式的性能复测。
 - 共同 PA 模式与 `sharedCoupling` 迁移策略。
 

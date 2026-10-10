@@ -16,12 +16,23 @@ struct TVSoundNotch: Sendable {
     }
     mutating func process(_ input: [Float]) -> [Float] {
         var output = input
-        for n in input.indices {
-            let x = input[n]
-            let y = b0*x+b1*x1+b2*x2-a1*y1-a2*y2
-            x2 = x1; x1 = x; y2 = y1; y1 = y
-            output[n] = y
+        let count = input.count
+        // Borrow both buffers and keep the state in locals: this is a serial IIR
+        // over the whole frame, so per-sample bounds and property traffic dominates.
+        var px1 = x1, px2 = x2, py1 = y1, py2 = y2
+        let cb0 = b0, cb1 = b1, cb2 = b2, ca1 = a1, ca2 = a2
+        input.withUnsafeBufferPointer { ip in
+            output.withUnsafeMutableBufferPointer { op in
+                let source = ip.baseAddress!, target = op.baseAddress!
+                for n in 0..<count {
+                    let x = source[n]
+                    let y = cb0*x+cb1*px1+cb2*px2-ca1*py1-ca2*py2
+                    px2 = px1; px1 = x; py2 = py1; py1 = y
+                    target[n] = y
+                }
+            }
         }
+        x1 = px1; x2 = px2; y1 = py1; y2 = py2
         return output
     }
 }
@@ -50,6 +61,8 @@ public struct TVFrontEndSettings: Codable, Equatable, Sendable {
     /// Drive the common gain from the measured vision target (block feedback).
     /// When on, the detector no longer applies its own gain, so it acts once.
     public var agcEnabled = false
+    /// Optional video low-pass after detection, on top of the sound notch.
+    public var videoLowpassEnabled = false
     /// Input-stage saturation power in the receiver's relative units.
     public var inputSaturationDB: Float = 12
     public var inputHardness: Float = 0.5
@@ -64,7 +77,7 @@ public struct TVFrontEndSettings: Codable, Equatable, Sendable {
     public var soundNotchPolicy: TVSoundNotchPolicy = .suppressed
     public init() {}
     public enum CodingKeys: String, CodingKey {
-        case enabled, gainDB, agcEnabled, inputSaturationDB, inputHardness, inputAMPMDegrees
+        case enabled, gainDB, agcEnabled, videoLowpassEnabled, inputSaturationDB, inputHardness, inputAMPMDegrees
         case ifSaturationDB, ifHardness, ifAMPMDegrees, soundDetection, soundNotchPolicy
     }
     /// Unknown or missing keys fall back to their defaults, so a session written
@@ -74,6 +87,7 @@ public struct TVFrontEndSettings: Codable, Equatable, Sendable {
         enabled = try c.decodeIfPresent(Bool.self,forKey: .enabled) ?? false
         gainDB = try c.decodeIfPresent(Float.self,forKey: .gainDB) ?? 0
         agcEnabled = try c.decodeIfPresent(Bool.self,forKey: .agcEnabled) ?? false
+        videoLowpassEnabled = try c.decodeIfPresent(Bool.self,forKey: .videoLowpassEnabled) ?? false
         inputSaturationDB = try c.decodeIfPresent(Float.self,forKey: .inputSaturationDB) ?? 12
         inputHardness = try c.decodeIfPresent(Float.self,forKey: .inputHardness) ?? 0.5
         inputAMPMDegrees = try c.decodeIfPresent(Float.self,forKey: .inputAMPMDegrees) ?? 0

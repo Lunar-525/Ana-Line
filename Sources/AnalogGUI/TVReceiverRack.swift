@@ -50,6 +50,7 @@ struct TVTunerAGCRack: View {
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
                 Toggle(L("Front-end overload / nonlinearity"),isOn: $state.tvChannel.frontEnd.enabled)
                 Toggle(L("Common front-end AGC"),isOn: $state.tvChannel.frontEnd.agcEnabled)
+                Toggle(L("Video low-pass"),isOn: $state.tvChannel.frontEnd.videoLowpassEnabled)
                 HStack(spacing: 12) {
                     TVRotaryParameter(name: "Front-end gain · dB",value: $state.tvChannel.frontEnd.gainDB,
                         range: -20...60,initial: 0,step: 0.5,unit: "dB",digits: 1)

@@ -117,7 +117,7 @@ public struct TVComplexResampler: Sendable {
                             let work = TVResamplerWork(x: xp,y: yp,table: wp,outI: op,outQ: oq,
                                 tapCount: tapCount,phaseCount: phaseCount,kernelRadius: kernelRadius,
                                 ratio: ratio,fullStart: fullStart,outputStart: outputStart)
-                            let workers = min(8,max(1,outputCount/32_768))
+                            let workers = min(12,max(1,outputCount/32_768))
                             if workers > 1 {
                                 DispatchQueue.concurrentPerform(iterations: workers) { worker in
                                     work.run(worker*outputCount/workers ..< (worker+1)*outputCount/workers)

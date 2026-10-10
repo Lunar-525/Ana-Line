@@ -67,7 +67,7 @@ public struct TVChannelModulator: Sendable {
                         resampled.1.withUnsafeBufferPointer { rq in
                             let work = TVSoundChannelNCO(ri: ri,rq: rq,vi: ip,vq: qp,
                                 startPhase: ncoPhase,step: shiftStep)
-                            let workers = min(8,max(1,count/65_536))
+                            let workers = min(12,max(1,count/65_536))
                             if workers > 1 {
                                 DispatchQueue.concurrentPerform(iterations: workers) { worker in
                                     work.run(worker*count/workers ..< (worker+1)*count/workers)

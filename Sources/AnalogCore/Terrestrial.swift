@@ -493,6 +493,8 @@ public struct TerrestrialReceiver: Sendable {
     private var carrierFilterRate: Double = 0
     /// Detected video before the sound notch: the intercarrier tap.
     private(set) var detectedVideo: [Float] = []
+    private var videoLowpass: TelevisionFIR?
+    private var videoLowpassRate: Double = 0
     private var carrierPhase = 0.0
     private(set) var carrierFrequency = 0.0
     private var gain: Float = 1
@@ -723,6 +725,17 @@ public struct TerrestrialReceiver: Sendable {
                 notchRate = rate
             }
             demod = soundNotch!.process(demod)
+        }
+        // Optional video low-pass, after the notch, rolled off beyond the vision
+        // band. It is off by default: the notch is the primary companion filter.
+        if settings.frontEnd.videoLowpassEnabled {
+            if videoLowpass == nil || videoLowpassRate != rate {
+                let (k,_) = TelevisionFIR.complexKernel(rate: rate,radius: 24) {
+                    TelevisionFIR.taper($0,cutoff: system.videoMHz*1e6+0.6e6,transition: 0.6e6)
+                }
+                videoLowpass = TelevisionFIR(k); videoLowpassRate = rate
+            }
+            demod = videoLowpass!.process(demod)
         }
         // Sync-tip keyed AGC is approximated by the upper carrier-amplitude quantile.
         // Independent RF noise means AGC cannot recover S/N after deep attenuation.
