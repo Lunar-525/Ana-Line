@@ -142,6 +142,25 @@ final class TVFrontEndTests: XCTestCase {
         XCTAssertEqual(b.gainDB,6)
     }
 
+    func testCommonFrontEndAGCDrivesSharedGainOnce() throws {
+        for system in TerrestrialSystem.allCases {
+            var engine = TVUnifiedChannelEngine(system: system)
+            var settings = TerrestrialSettings(system: system)
+            settings.signalDB = -20; settings.carrierToNoiseDB = 90
+            settings.frontEnd.agcEnabled = true
+            let source = TVFrame.colorBars(system.video)
+            var lastGainDB: Float = 0, locked = 0
+            for frame: Int64 in 0..<6 {
+                let result = try engine.process(TVEngine.encode(source,frameIndex: frame),settings: settings)
+                lastGainDB = result.frontEndGainDB
+                if result.lock == .locked { locked += 1 }
+            }
+            print("common AGC",system.rawValue,"gainDB",lastGainDB,"locked",locked)
+            XCTAssertEqual(lastGainDB,20,accuracy: 2,"Shared gain must converge to the measured 20 dB loss")
+            XCTAssertGreaterThanOrEqual(locked,4,"Front-end AGC must recover lock on the attenuated signal")
+        }
+    }
+
     func testFrontEndOverloadCompressesStrongInput() throws {
         let system = TerrestrialSystem.palDK
         let input = channel(system,hz: 1_000_000,amplitude: 0.5)

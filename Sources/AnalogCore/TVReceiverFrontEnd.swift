@@ -47,6 +47,9 @@ public struct TVFrontEndSettings: Codable, Equatable, Sendable {
     public var enabled = false
     /// Common gain applied exactly once, ahead of the input stage.
     public var gainDB: Float = 0
+    /// Drive the common gain from the measured vision target (block feedback).
+    /// When on, the detector no longer applies its own gain, so it acts once.
+    public var agcEnabled = false
     /// Input-stage saturation power in the receiver's relative units.
     public var inputSaturationDB: Float = 12
     public var inputHardness: Float = 0.5
@@ -61,7 +64,7 @@ public struct TVFrontEndSettings: Codable, Equatable, Sendable {
     public var soundNotchPolicy: TVSoundNotchPolicy = .suppressed
     public init() {}
     public enum CodingKeys: String, CodingKey {
-        case enabled, gainDB, inputSaturationDB, inputHardness, inputAMPMDegrees
+        case enabled, gainDB, agcEnabled, inputSaturationDB, inputHardness, inputAMPMDegrees
         case ifSaturationDB, ifHardness, ifAMPMDegrees, soundDetection, soundNotchPolicy
     }
     /// Unknown or missing keys fall back to their defaults, so a session written
@@ -70,6 +73,7 @@ public struct TVFrontEndSettings: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try c.decodeIfPresent(Bool.self,forKey: .enabled) ?? false
         gainDB = try c.decodeIfPresent(Float.self,forKey: .gainDB) ?? 0
+        agcEnabled = try c.decodeIfPresent(Bool.self,forKey: .agcEnabled) ?? false
         inputSaturationDB = try c.decodeIfPresent(Float.self,forKey: .inputSaturationDB) ?? 12
         inputHardness = try c.decodeIfPresent(Float.self,forKey: .inputHardness) ?? 0.5
         inputAMPMDegrees = try c.decodeIfPresent(Float.self,forKey: .inputAMPMDegrees) ?? 0
@@ -80,7 +84,7 @@ public struct TVFrontEndSettings: Codable, Equatable, Sendable {
         soundNotchPolicy = try c.decodeIfPresent(TVSoundNotchPolicy.self,forKey: .soundNotchPolicy) ?? .suppressed
     }
     func validate() throws {
-        let checks: [(Float,ClosedRange<Float>)] = [(gainDB,-20...60),(inputSaturationDB,-40...60),
+        let checks: [(Float,ClosedRange<Float>)] = [(gainDB,-20...80),(inputSaturationDB,-40...60),
             (inputHardness,0...1),(inputAMPMDegrees,-90...90),(ifSaturationDB,-40...60),
             (ifHardness,0...1),(ifAMPMDegrees,-90...90)]
         guard checks.allSatisfy({ $0.0.isFinite && $0.1.contains($0.0) }) else { throw TVError.invalidSettings }

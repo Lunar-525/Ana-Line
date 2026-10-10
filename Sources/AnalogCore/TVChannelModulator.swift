@@ -38,7 +38,7 @@ public struct TVChannelModulator: Sendable {
     private var soundInputRate: Double = 0
     private var ncoPhase = 0.0
 
-    public init(system: TerrestrialSystem, sampleRate: Double? = nil, soundRadius: Int = 8) {
+    public init(system: TerrestrialSystem, sampleRate: Double? = nil, soundRadius: Int = 6) {
         self.system = system
         self.sampleRate = sampleRate ?? system.video.sampleRate
         self.soundRadius = soundRadius

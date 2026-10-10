@@ -21,6 +21,7 @@ public struct TVUnifiedChannelEngine: Sendable {
     private var extractor: TVSoundExtractor
     private var extractorMode: TVSoundDetectionMode = .splitSound
     private var demodulator: TVSoundDemodulator
+    private var commonGain: Float = 1
     private let soundSpectrumAnalyzer = TVSpectrumAnalyzer(log2Size: 9)
 
     public init(system: TerrestrialSystem, seed: UInt64 = 42) {
@@ -37,6 +38,12 @@ public struct TVUnifiedChannelEngine: Sendable {
     public mutating func process(_ input: CompositeVideo, settings: TerrestrialSettings,
                                  audio: [Float]? = nil) throws -> TerrestrialReception {
         let start = ContinuousClock.now
+        var settings = settings
+        if settings.frontEnd.agcEnabled {
+            // Block feedback: the previous frame's measured target sets the
+            // shared gain before this frame is amplified.
+            settings.frontEnd.gainDB = 20*log10(max(0.1,min(10000,commonGain)))
+        }
         try settings.validate(rate: input.standard.sampleRate)
         if let audio {
             guard audio.allSatisfy(\.isFinite),
@@ -88,6 +95,12 @@ public struct TVUnifiedChannelEngine: Sendable {
         // One shared receiver pass feeds both vision detection and sound extraction.
         let reception = try receiver.receiveWithFrontEnd(transmitted, settings: settings)
         var result = reception.0
+        if settings.frontEnd.agcEnabled {
+            // The detector measured the target for the gain already applied, so
+            // the update is multiplicative: g <- g * target.
+            let target = pow(Float(10),reception.0.agcTargetDB/20)
+            commonGain = max(0.1,min(10000,commonGain*target))
+        }
         result.lightningEvents = TVLightningTimeline.events(
             time: Double(input.frameIndex)*input.standard.frameDuration,
             duration: Double(input.samples.count)/input.standard.sampleRate,
@@ -118,8 +131,10 @@ public struct TVUnifiedChannelEngine: Sendable {
                 extracted = extractor.extract(i: reception.1.i,q: reception.1.q,frameIndex: input.frameIndex,
                     firstSampleIndex: reception.1.firstSampleIndex,sampleRate: reception.1.sampleRate,shiftHz: shift)
             }
+            // With common front-end AGC the gain is already in the shared IQ.
+            let recoveryGain: Float = settings.frontEnd.agcEnabled ? 1 : receiver.currentGain
             let recovered = demodulator.demodulate(extracted,settings: settings,visionCorrectionHz: 0,
-                                                   receiverGain: receiver.currentGain)
+                                                   receiverGain: recoveryGain)
             result.audio = recovered.samples
             result.soundCarrierDB = recovered.carrierDB
             result.soundSeconds = recovered.seconds

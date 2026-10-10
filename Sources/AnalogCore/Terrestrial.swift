@@ -136,6 +136,8 @@ public struct TerrestrialReception: Sendable {
     public var frontEndGainDB: Float = 0
     public var frontEndOverloaded = false
     public var inputPowerDB: Float = 0
+    /// Unsmoothed vision-gain target measured this frame, for block feedback.
+    public var agcTargetDB: Float = 0
 }
 
 /// A causal, streaming FIR. State survives block boundaries, including between frames.
@@ -574,7 +576,10 @@ public struct TerrestrialReceiver: Sendable {
             carrierFilterI = TelevisionFIR(k); carrierFilterQ = TelevisionFIR(k)
             carrierFilterRate = rate
         }
-        let carrierI = carrierFilterI!.process(re), carrierQ = carrierFilterQ!.process(im)
+        let carrierFiltered = TelevisionFIR.together([carrierFilterI!,carrierFilterQ!],
+                                                     inputs: [re,im],execution: settings.execution)
+        carrierFilterI = carrierFiltered.0[0]; carrierFilterQ = carrierFiltered.0[1]
+        let carrierI = carrierFiltered.1[0], carrierQ = carrierFiltered.1[1]
         let vectorAngles = settings.execution == .accelerated
         var angles = [Float](repeating: 0,count: vectorAngles ? count : 0)
         if vectorAngles {
@@ -710,7 +715,8 @@ public struct TerrestrialReceiver: Sendable {
         // Notch the companion carrier before AGC and sync. A wide vision IF keeps
         // the +4.5/+6.5 MHz sound carrier, whose beat otherwise corrupts the
         // sync-tip quantile and the slicer. State persists across the session.
-        detectedVideo = demod
+        // Only intercarrier needs the pre-notch video; split sound never reads it.
+        if settings.frontEnd.soundDetection == .intercarrier { detectedVideo = demod }
         if settings.frontEnd.soundNotchPolicy == .suppressed {
             if soundNotch == nil || notchRate != rate {
                 soundNotch = TVSoundNotch(frequency: system.soundCarrierHz,rate: rate)
@@ -722,8 +728,10 @@ public struct TerrestrialReceiver: Sendable {
         // Independent RF noise means AGC cannot recover S/N after deep attenuation.
         let probes = stride(from: 128, to: count, by: 97).map { demod[$0] }.sorted()
         let tip = max(1e-5, probes[min(probes.count-1, Int(Double(probes.count)*0.96))])
+        var measuredTargetDB: Float = 0
         if settings.automaticGain {
             let target = min(10000, max(0.05, 1 / tip))
+            measuredTargetDB = 20*log10(target)
             if settings.receiverDamage.agcEnabled {
                 var sum: Float = 0
                 if settings.execution == .accelerated {
@@ -741,14 +749,19 @@ public struct TerrestrialReceiver: Sendable {
             gainAcquired = true
         } else {
             gain = pow(10, settings.manualGainDB / 20)
+            measuredTargetDB = settings.manualGainDB
             gainDynamics.reset(); pictureReference = nil; clampState = nil
         }
+        // A common front-end AGC already applied this gain to the shared IQ, so
+        // the detector must not apply it a second time. The measured target is
+        // still reported through agcDB for the front-end block feedback.
+        let reconstructionGain = settings.frontEnd.agcEnabled ? 1 : gain
         var voltage: [Float]
         if settings.execution == .accelerated {
             voltage = [Float](repeating: 0,count: count)
-            var scale = -gain/0.875, offset: Float = 0.7375/0.875
+            var scale = -reconstructionGain/0.875, offset: Float = 0.7375/0.875
             vDSP_vsmsa(demod,1,&scale,&offset,&voltage,1,vDSP_Length(count))
-        } else { voltage = demod.map { (0.7375 - $0*gain) / 0.875 } }
+        } else { voltage = demod.map { (0.7375 - $0*reconstructionGain) / 0.875 } }
         let smoothed = syncLowpass.process(voltage,chunks: settings.execution == .accelerated ? 2 : 1)
         // Hysteretic sync slicer: smooth only the detector, preserving video bandwidth.
         var edges = [Int](), broad = [Int](), start: Int?
@@ -853,6 +866,7 @@ public struct TerrestrialReceiver: Sendable {
             recoveredLines: good ? decoded.recoveredLines : 0, colorLockedLines: good ? decoded.colorLockedLines : 0,
             agcDB: 20*log10(gain), carrierErrorHz: measured-carrierFrequency-pllCorrection*rate/(2 * .pi * Double(count-acquisitionStart-1)), syncConfidence: confidence)
         reception.visionSpectrum = spectrum
+        reception.agcTargetDB = measuredTargetDB
         reception.frontEndGainDB = front.gainDB
         reception.frontEndOverloaded = front.overloaded
         reception.inputPowerDB = front.inputPowerDB
