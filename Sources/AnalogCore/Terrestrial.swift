@@ -448,11 +448,12 @@ public struct TVSyncTiming: Sendable {
 
 public struct TerrestrialReceiver: Sendable {
     public let system: TerrestrialSystem
-    private let spectrumAnalyzer = TVSpectrumAnalyzer()
-    private var ifII: TelevisionFIR?, ifIQ: TelevisionFIR?
-    private var ifQI: TelevisionFIR?, ifQQ: TelevisionFIR?
-    private var bandwidth: Float = -1
-    private var tunerPhase = 0.0
+    private var frontEnd: TVReceiverFrontEnd
+    private var soundNotch: TVSoundNotch?
+    private var notchRate: Double = 0
+    private var carrierFilterI: TelevisionFIR?
+    private var carrierFilterQ: TelevisionFIR?
+    private var carrierFilterRate: Double = 0
     private var carrierPhase = 0.0
     private(set) var carrierFrequency = 0.0
     private var gain: Float = 1
@@ -477,58 +478,66 @@ public struct TerrestrialReceiver: Sendable {
         return previous < 3 ? .holding : .searching
     }
     public init(system: TerrestrialSystem) {
-        self.system = system; period = system.video.samplesPerLine
+        self.system = system; frontEnd = TVReceiverFrontEnd(system: system); period = system.video.samplesPerLine
         let (r, _) = TelevisionFIR.complexKernel(rate: system.video.sampleRate, radius: 12) {
             TelevisionFIR.taper($0, cutoff: 700_000, transition: 400_000)
         }
         syncLowpass = TelevisionFIR(r)
     }
+    /// Legacy entry point: wrap a 4fsc vision frame as one channel record and
+    /// receive it through the shared front end.
     public mutating func receive(_ input: TelevisionRF, settings: TerrestrialSettings) throws -> TerrestrialReception {
+        try input.validate()
+        let clock = TVChannelClock(system: system, sampleRate: input.sampleRate)
+        let channel = TVChannelIQ(system: system, frameIndex: input.frameIndex,
+                                  firstSampleIndex: clock.offset(frame: input.frameIndex),
+                                  sampleRate: input.sampleRate, i: input.i, q: input.q)
+        return try receive(channel, settings: settings)
+    }
+
+    /// Unified entry point: one combined channel IQ. A single tuning pass and one
+    /// common IF run before carrier recovery and detection, so vision and sound
+    /// share the same receiver front end.
+    public mutating func receive(_ input: TVChannelIQ, settings: TerrestrialSettings) throws -> TerrestrialReception {
+        try receiveWithFrontEnd(input, settings: settings).0
+    }
+
+    /// Same as receive(_:settings:) but also returns the shared front-end output,
+    /// so a companion carrier can be extracted from the same receiver pass.
+    mutating func receiveWithFrontEnd(_ input: TVChannelIQ, settings: TerrestrialSettings) throws -> (TerrestrialReception, TVFrontEndOutput) {
         let started = ContinuousClock.now
         try input.validate()
         guard input.system == system else { throw TVError.invalidSignal }
         try settings.validate(rate: input.sampleRate)
-        let s = system.video, rate = input.sampleRate, count = input.i.count
-        // Display the received RF in fixed transmitter coordinates. Tuning and
-        // IF filtering below affect reception, not the spectrum's frequency axis.
-        let spectrum = spectrumAnalyzer.analyze(i: input.i, q: input.q, rate: rate)
-        // Tune the complex RF signal before the IF filter; detuning therefore changes
-        // the signal's position within the passband, even when AFC can track its carrier.
-        let step = -2 * Double.pi * Double(settings.tuningOffsetKHz) * 1000 / rate
-        var re = input.i, im = input.q
-        if step != 0 || tunerPhase != 0 {
-            let initial = tunerPhase, c = cos(step), q = sin(step)
-            tunerPhase = input.i.withUnsafeBufferPointer { a in input.q.withUnsafeBufferPointer { b in
-                re.withUnsafeMutableBufferPointer { r in im.withUnsafeMutableBufferPointer { out in
-                    var x = cos(initial), y = sin(initial)
-                    for n in 0..<count {
-                        r[n] = a[n]*Float(x)-b[n]*Float(y); out[n] = a[n]*Float(y)+b[n]*Float(x)
-                        let next = x*c-y*q; y = x*q+y*c; x = next
-                        if n & 1023 == 0 { let norm = hypot(x,y); x /= norm; y /= norm }
-                    }
-                    return atan2(y,x)
-                } }
-            } }
-        }
-        if bandwidth != settings.rfBandwidthMHz {
-            bandwidth = settings.rfBandwidthMHz
-            let low = -1.25e6, high = Double(bandwidth)*1e6 - 1.25e6
-            let center = (high + low)/2, half = (high-low)/2
-            let (a,b) = TelevisionFIR.complexKernel(rate: rate, normalizationHz: center) { f in
-                TelevisionFIR.taper(f-center, cutoff: half)
-            }
-            ifII = TelevisionFIR(a); ifIQ = TelevisionFIR(b)
-            ifQI = TelevisionFIR(a); ifQQ = TelevisionFIR(b)
-        }
-        let filtered = TelevisionFIR.together([ifII!,ifIQ!,ifQI!,ifQQ!],inputs: [re,re,im,im],execution: settings.execution)
-        ifII = filtered.0[0]; ifIQ = filtered.0[1]; ifQI = filtered.0[2]; ifQQ = filtered.0[3]
-        let ai = filtered.1[0], bi = filtered.1[1], aq = filtered.1[2], bq = filtered.1[3]
-        vDSP_vsub(bq,1,ai,1,&re,1,vDSP_Length(count))
-        vDSP_vadd(bi,1,aq,1,&im,1,vDSP_Length(count))
+        let front = try frontEnd.process(input, settings: settings)
+        return (try detect(front, settings: settings, started: started), front)
+    }
+
+    /// Detection-only half of the receiver, after the shared front end. The input
+    /// is already tuned and IF-filtered; the spectrum is the pre-tuner RF tap.
+    mutating func detect(
+        _ front: TVFrontEndOutput, settings: TerrestrialSettings, started: ContinuousClock.Instant
+    ) throws -> TerrestrialReception {
+        let s = system.video, rate = front.sampleRate, count = front.i.count
+        var re = front.i, im = front.q
+        let spectrum = front.spectrum
+        let frameIndex = front.frameIndex
         let tuned = ContinuousClock.now
         // Coarse AFC uses measured, unwrapped phase; it does not read transmitter
         // frequency or synchronization metadata. Capture range is deliberately finite.
         let acquisitionStart = min(2048, count/4)
+        // Select the vision carrier before estimating its frequency. Near peak
+        // white the companion carrier can dominate the composite IF vector, so
+        // measuring the raw channel would bias AFC. The PLL below keeps tracking
+        // the full signal, so the scalar and vector paths remain identical.
+        if carrierFilterI == nil || carrierFilterRate != rate {
+            let (k,_) = TelevisionFIR.complexKernel(rate: rate,radius: 24) {
+                TelevisionFIR.taper($0,cutoff: 250_000,transition: 200_000)
+            }
+            carrierFilterI = TelevisionFIR(k); carrierFilterQ = TelevisionFIR(k)
+            carrierFilterRate = rate
+        }
+        let carrierI = carrierFilterI!.process(re), carrierQ = carrierFilterQ!.process(im)
         let vectorAngles = settings.execution == .accelerated
         var angles = [Float](repeating: 0,count: vectorAngles ? count : 0)
         if vectorAngles {
@@ -545,21 +554,30 @@ public struct TerrestrialReceiver: Sendable {
         if vectorAngles {
             // Adjacent measured phase differences and powers are independent.
             // Each worker owns its accumulator; carrier PLL feedback stays serial.
+            var carrierAngles = [Float](repeating: 0,count: count)
+            var carrierLength = Int32(count)
+            carrierI.withUnsafeBufferPointer { x in
+                carrierQ.withUnsafeBufferPointer { y in
+                    carrierAngles.withUnsafeMutableBufferPointer { p in
+                        vvatan2f(p.baseAddress!,y.baseAddress!,x.baseAddress!,&carrierLength)
+                    }
+                }
+            }
             let workers = min(8,max(1,(count-acquisitionStart)/65_536))
             let work = (0..<workers).map { worker in
-                TVCarrierScan(i: re,q: im,angles: angles,
+                TVCarrierScan(i: carrierI,q: carrierQ,angles: carrierAngles,
                     range: acquisitionStart+1+worker*(count-acquisitionStart-1)/workers ..< acquisitionStart+1+(worker+1)*(count-acquisitionStart-1)/workers)
             }
             DispatchQueue.concurrentPerform(iterations: workers) { work[$0].run() }
             for item in work { winding += item.result.x; totalPower += item.result.y }
         } else {
-            var previous = atan2(Double(im[acquisitionStart]),Double(re[acquisitionStart]))
+            var previous = atan2(Double(carrierQ[acquisitionStart]),Double(carrierI[acquisitionStart]))
             for n in acquisitionStart+1..<count {
-                let p = atan2(Double(im[n]),Double(re[n]))
+                let p = atan2(Double(carrierQ[n]),Double(carrierI[n]))
                 var d = p-previous
                 if d > .pi { d -= 2 * .pi }; if d < -.pi { d += 2 * .pi }
                 winding += d; previous = p
-                totalPower += Double(re[n]*re[n]+im[n]*im[n])
+                totalPower += Double(carrierI[n]*carrierI[n]+carrierQ[n]*carrierQ[n])
             }
         }
         let measured = winding * rate / (2 * .pi * Double(max(1,count-acquisitionStart-1)))
@@ -652,6 +670,14 @@ public struct TerrestrialReceiver: Sendable {
             carrierPhase = atan2(oscillatorQ,oscillatorI)
         }
         let carrierRecovered = ContinuousClock.now
+        // Notch the companion carrier before AGC and sync. A wide vision IF keeps
+        // the +4.5/+6.5 MHz sound carrier, whose beat otherwise corrupts the
+        // sync-tip quantile and the slicer. State persists across the session.
+        if soundNotch == nil || notchRate != rate {
+            soundNotch = TVSoundNotch(frequency: system.soundCarrierHz,rate: rate)
+            notchRate = rate
+        }
+        demod = soundNotch!.process(demod)
         // Sync-tip keyed AGC is approximated by the upper carrier-amplitude quantile.
         // Independent RF noise means AGC cannot recover S/N after deep attenuation.
         let probes = stride(from: 128, to: count, by: 97).map { demod[$0] }.sorted()
@@ -774,7 +800,7 @@ public struct TerrestrialReceiver: Sendable {
             if good { lock = circuitLock }
         } else { rasterMisses = nil }
         let timing = raster.0
-        let composite = try CompositeVideo(standard: s, frameIndex: input.frameIndex, samples: voltage)
+        let composite = try CompositeVideo(standard: s, frameIndex: frameIndex, samples: voltage)
         let synchronized = ContinuousClock.now
         var decoded = try TVEngine.decode(composite, settings: settings.decoder, timing: timing, execution: settings.execution)
         if system == .ntscM {

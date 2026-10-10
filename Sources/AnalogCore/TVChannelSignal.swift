@@ -47,3 +47,19 @@ public struct TVChannelIQ: Sendable {
     public var visionCarrierHz: Double { 0 }
     public var soundCarrierHz: Double { system.soundCarrierHz }
 }
+
+public extension TerrestrialRFChannel {
+    /// One propagation pass over a combined channel record. The channel is
+    /// referenced to the vision carrier (0 Hz), so a fractional echo delay
+    /// produces the sound/vision differential phase inside this one IQ instead
+    /// of a second narrowband branch correcting for it afterwards. Noise density
+    /// is referenced to the 4fsc video rate so oversampling cannot change C/N.
+    mutating func transmit(_ input: TVChannelIQ, settings: TerrestrialSettings) throws -> TVChannelIQ {
+        try input.validate()
+        let (i,q) = transmit(i: input.i,q: input.q,rate: input.sampleRate,carrierOffsetHz: 0,
+                             noiseReferenceRate: input.system.video.sampleRate,
+                             time: Double(input.firstSampleIndex)/input.sampleRate,settings: settings)
+        return TVChannelIQ(system: input.system,frameIndex: input.frameIndex,
+                           firstSampleIndex: input.firstSampleIndex,sampleRate: input.sampleRate,i: i,q: q)
+    }
+}
