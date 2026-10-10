@@ -32,10 +32,41 @@ public struct TerrestrialSettings: Codable, Equatable, Sendable {
     public var transmitter = TVTransmitterSettings()
     public var receiverDamage = TVReceiverDamageSettings()
     public var decoder = TVDecoderSettings()
+    /// Shared receiver front-end gain and nonlinearity.
+    public var frontEnd = TVFrontEndSettings()
     public init() {}
     public init(system: TerrestrialSystem) { rfBandwidthMHz = system.channelMHz }
+    public enum CodingKeys: String, CodingKey {
+        case execution, signalDB, carrierToNoiseDB, rfBandwidthMHz, echoGain, echoDelayMicroseconds
+        case echoPhaseDegrees, tuningOffsetKHz, automaticFineTuning, automaticGain, manualGainDB, seed
+        case propagation, transmitter, receiverDamage, decoder, frontEnd
+    }
+    /// Missing keys fall back to their defaults so a session written before a
+    /// field existed still decodes. Every new field must be added here with
+    /// decodeIfPresent rather than relying on synthesized decoding.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        execution = try container.decodeIfPresent(TVExecution.self,forKey: .execution) ?? .accelerated
+        signalDB = try container.decodeIfPresent(Float.self,forKey: .signalDB) ?? 0
+        carrierToNoiseDB = try container.decodeIfPresent(Float.self,forKey: .carrierToNoiseDB) ?? 45
+        rfBandwidthMHz = try container.decodeIfPresent(Float.self,forKey: .rfBandwidthMHz) ?? 8
+        echoGain = try container.decodeIfPresent(Float.self,forKey: .echoGain) ?? 0
+        echoDelayMicroseconds = try container.decodeIfPresent(Float.self,forKey: .echoDelayMicroseconds) ?? 2
+        echoPhaseDegrees = try container.decodeIfPresent(Float.self,forKey: .echoPhaseDegrees) ?? 0
+        tuningOffsetKHz = try container.decodeIfPresent(Float.self,forKey: .tuningOffsetKHz) ?? 0
+        automaticFineTuning = try container.decodeIfPresent(Bool.self,forKey: .automaticFineTuning) ?? true
+        automaticGain = try container.decodeIfPresent(Bool.self,forKey: .automaticGain) ?? true
+        manualGainDB = try container.decodeIfPresent(Float.self,forKey: .manualGainDB) ?? 0
+        seed = try container.decodeIfPresent(UInt64.self,forKey: .seed) ?? 42
+        propagation = try container.decodeIfPresent(TVPropagationSettings.self,forKey: .propagation) ?? TVPropagationSettings()
+        transmitter = try container.decodeIfPresent(TVTransmitterSettings.self,forKey: .transmitter) ?? TVTransmitterSettings()
+        receiverDamage = try container.decodeIfPresent(TVReceiverDamageSettings.self,forKey: .receiverDamage) ?? TVReceiverDamageSettings()
+        self.decoder = try container.decodeIfPresent(TVDecoderSettings.self,forKey: .decoder) ?? TVDecoderSettings()
+        frontEnd = try container.decodeIfPresent(TVFrontEndSettings.self,forKey: .frontEnd) ?? TVFrontEndSettings()
+    }
     public func validate(rate: Double) throws {
         try propagation.validate(); try transmitter.validate(); try receiverDamage.validate(); try decoder.validate()
+        try frontEnd.validate()
         let values = [signalDB, carrierToNoiseDB, rfBandwidthMHz, echoGain,
                       echoDelayMicroseconds, echoPhaseDegrees, tuningOffsetKHz, manualGainDB]
         guard values.allSatisfy(\.isFinite), (-80...20).contains(signalDB),
@@ -101,6 +132,10 @@ public struct TerrestrialReception: Sendable {
     public var soundSpectrum: TVSpectrum?
     public var transmitter = TVTransmitterTelemetry()
     public var lightningEvents = [TVLightningEvent]()
+    /// Shared front-end telemetry (common gain, overload, pre-nonlinearity level).
+    public var frontEndGainDB: Float = 0
+    public var frontEndOverloaded = false
+    public var inputPowerDB: Float = 0
 }
 
 /// A causal, streaming FIR. State survives block boundaries, including between frames.
@@ -813,6 +848,9 @@ public struct TerrestrialReceiver: Sendable {
             recoveredLines: good ? decoded.recoveredLines : 0, colorLockedLines: good ? decoded.colorLockedLines : 0,
             agcDB: 20*log10(gain), carrierErrorHz: measured-carrierFrequency-pllCorrection*rate/(2 * .pi * Double(count-acquisitionStart-1)), syncConfidence: confidence)
         reception.visionSpectrum = spectrum
+        reception.frontEndGainDB = front.gainDB
+        reception.frontEndOverloaded = front.overloaded
+        reception.inputPowerDB = front.inputPowerDB
         // Report each detector separately. Valid H intervals can survive lost V
         // pulses, and a narrow picture IF can remove burst while retaining H/V.
         reception.synchronization.horizontal = Self.syncState(detected: horizontalDetected && raster.1,misses: &horizontalMisses)

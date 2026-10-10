@@ -13,12 +13,13 @@
 - **第 7 步（部分）· 图像载波选择。** AFC 先前置 250 kHz 载波选择，避免峰值白电平时伴音主导复合矢量而污染测频；PLL 仍跟踪完整信号，保证 `.reference` 与 `.accelerated` 数值一致。
 - **第 8 步（部分）· 伴音陷波。** 检波后加入二阶 IIR 伴音陷波 `TVSoundNotch`，供共同检波路径抑制 4.5／6.5 MHz 拍频。
 - **伴音提取。** 新增 `TVSoundExtractor`：从共同前端输出用连续 NCO 搬频并经带限重采样回到 384 kHz 窄带，再交给 `TVSoundDemodulator`（`projectFrontEnd: false`，即 Split Sound）。
+- **第 4 步（部分）· 共同 RX 增益与非线性。** `TVFrontEndSettings` 提供一次性共同增益（`gainDB`）与可旁路的 RF 输入级、IF 放大级无记忆压缩／AM-PM 模型（`TVReceiverAmplifier`，独立饱和参考与状态）；处理顺序固定为「固定坐标频谱取样 → 共同增益 → 输入级 → 调谐 → IF → IF 级」。`TVFrontEndOutput` 与 `TerrestrialReception` 增加增益／过载／输入电平遥测。`TerrestrialSettings.frontEnd` 使用 `decodeIfPresent` 迁移，旧版会话 JSON 缺字段仍可解码。
 
 测试：`TVChannelTests`（时钟连续性、重采样单音／镜像／混叠／跨块拼接、双载波频谱）与 `TVUnifiedChannelTests`（单通道图像锁定、音画同收、窄 IF 拒绝伴音）。
 
 尚未实现：
 
-- **第 4 步 · 共同 RX 增益与非线性**：前端过载、压缩、互调与 AGC 反馈尚未进入共同前端。
+- **第 4 步 · AGC 反馈**：把测得同步尖端／背沿目标反馈到共同前端（块反馈、启动增益、预卷）尚未实现；前端非线性本身已可用。
 - **第 5 步 · Intercarrier 与视频滤波**：当前为 Split Sound 提取，Intercarrier 与可切换视频陷波策略未实现。
 - **第 6 步 · 会话／GUI 集成与性能验收**：`TerrestrialEngine` 与 GUI 仍走旧的双分支路径；统一路径尚未接入渲染、频谱与 `TVSessionDocument`。
 - 共同 PA 模式与 `sharedCoupling` 迁移策略。
