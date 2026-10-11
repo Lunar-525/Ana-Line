@@ -9,6 +9,7 @@
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>__BUILD_ID__</string>
 <key>AnaLineBuildTime</key><string>__BUILD_TIME__</string>
+<key>AnaLineBuildConfiguration</key><string>__BUILD_CONFIGURATION__</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>CFBundleDocumentTypes</key><array><dict>
 <key>CFBundleTypeName</key><string>AnaLine Terrestrial Session</string>

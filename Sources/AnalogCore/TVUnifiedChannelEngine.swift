@@ -42,7 +42,8 @@ public struct TVUnifiedChannelEngine: Sendable {
         if settings.frontEnd.agcEnabled {
             // Block feedback: the previous frame's measured target sets the
             // shared gain before this frame is amplified.
-            settings.frontEnd.gainDB = 20*log10(max(0.1,min(10000,commonGain)))
+            settings.frontEnd.gainDB = settings.automaticGain
+                ? 20*log10(max(0.1,min(10000,commonGain))) : settings.manualGainDB
         }
         try settings.validate(rate: input.standard.sampleRate)
         if let audio {
@@ -58,21 +59,26 @@ public struct TVUnifiedChannelEngine: Sendable {
         var visionPower: [Float] = []
         if audio != nil, settings.transmitter.enabled, settings.transmitter.sharedCoupling > 0 {
             let cells = TVSoundClock.count(frame: input.frameIndex,standard: input.standard,rate: Self.soundRate)
+            // The cross-compression envelope is a companion-rate cell average.
+            // The profile may estimate it from a sub-sample stride; at stride 1
+            // this averages exactly the samples the cell spans.
+            let step = max(1,settings.performance.amplifierCouplingStride)
             visionPower = vision.i.withUnsafeBufferPointer { ip in vision.q.withUnsafeBufferPointer { qp in
                 [Float](unsafeUninitializedCapacity: cells) { output,initialized in
                     let i = ip.baseAddress!, q = qp.baseAddress!, target = output.baseAddress!, count = ip.count
                     for cell in 0..<cells {
                         let a = cell*count/cells, b = (cell+1)*count/cells
-                        var sum: Float = 0
-                        for n in a..<b { sum += i[n]*i[n]+q[n]*q[n] }
-                        target.advanced(by: cell).initialize(to: sum/Float(max(1,b-a)))
+                        var sum: Float = 0, samples = 0
+                        for n in stride(from: a,to: b,by: step) { sum += i[n]*i[n]+q[n]*q[n]; samples += 1 }
+                        target.advanced(by: cell).initialize(to: sum/Float(max(1,samples)))
                     }
                     initialized = cells
                 }
             } }
         }
         (vision.i,vision.q) = visionAmplifier.apply(i: vision.i,q: vision.q,settings: settings.transmitter,
-            execution: settings.execution,otherPower: visionPower.isEmpty ? [] : [0.1*settings.transmitter.powerGain])
+            execution: settings.execution,otherPower: visionPower.isEmpty ? [] : [0.1*settings.transmitter.powerGain],
+            profile: settings.performance)
         var forward = visionAmplifier.meanOutputPower
         var overmodulated = visionModulator.overmodulated
         // Sound branch: PCM -> FM -> separate sound PA, still narrowband.
@@ -81,25 +87,29 @@ public struct TVUnifiedChannelEngine: Sendable {
             var sound = soundModulator.modulate(audio,frameIndex: input.frameIndex,settings: settings,
                                                 rate: Double(Self.soundRate))
             (sound.i,sound.q) = soundAmplifier.apply(i: sound.i,q: sound.q,settings: settings.transmitter,
-                execution: settings.execution,otherPower: visionPower)
+                execution: settings.execution,otherPower: visionPower,profile: settings.performance)
             forward += soundAmplifier.meanOutputPower
             overmodulated = overmodulated || soundModulator.overmodulated
             soundSignal = sound
         }
         // Linear combine, then one feedline mismatch on the combined output.
-        var combined = try combiner.combine(vision: vision,sound: soundSignal)
+        let combiningStarted = ContinuousClock.now
+        var combined = try combiner.combine(vision: vision,sound: soundSignal,profile: settings.performance)
         TVTransmitterSettings.deliver(i: &combined.i,q: &combined.q,settings: settings.transmitter)
         let modulated = ContinuousClock.now
+        let combinationSeconds = TerrestrialTimings.seconds(combiningStarted.duration(to: modulated))
         let transmitted = try channel.transmit(combined, settings: settings)
         let channelDone = ContinuousClock.now
         // One shared receiver pass feeds both vision detection and sound extraction.
         let reception = try receiver.receiveWithFrontEnd(transmitted, settings: settings)
         var result = reception.0
-        if settings.frontEnd.agcEnabled {
+        if settings.frontEnd.agcEnabled && settings.automaticGain {
             // The detector measured the target for the gain already applied, so
             // the update is multiplicative: g <- g * target.
             let target = pow(Float(10),reception.0.agcTargetDB/20)
             commonGain = max(0.1,min(10000,commonGain*target))
+        } else if settings.frontEnd.agcEnabled {
+            commonGain = pow(10,settings.manualGainDB/20)
         }
         result.lightningEvents = TVLightningTimeline.events(
             time: Double(input.frameIndex)*input.standard.frameDuration,
@@ -109,28 +119,33 @@ public struct TVUnifiedChannelEngine: Sendable {
         result.transmitter.referencePower = audio != nil ? 1.1 : 1
         result.transmitter.saturated = settings.transmitter.enabled
             && (visionAmplifier.peakDrivePower >= pow(10,settings.transmitter.backoffDB/10)
-                || soundAmplifier.peakDrivePower >= pow(10,settings.transmitter.backoffDB/10))
+                || (audio != nil && soundAmplifier.peakDrivePower >= pow(10,settings.transmitter.backoffDB/10)))
         result.transmitter.overmodulated = overmodulated
+        result.timings.channelCombination = combinationSeconds
         result.timings.modulation = TerrestrialTimings.seconds(start.duration(to: modulated))
         result.timings.channel = TerrestrialTimings.seconds(modulated.duration(to: channelDone))
-        if let audio {
+        if audio != nil {
             // Recover the companion carrier from the shared receiver pass. Split
             // Sound selects it from the IF; Intercarrier takes the beat from the
             // detected video, where a common tuning error has already cancelled.
             if extractorMode != settings.frontEnd.soundDetection {
                 extractor.reset(); extractorMode = settings.frontEnd.soundDetection
             }
+            let extractingStarted = ContinuousClock.now
             let extracted: TVSoundIQ
             switch settings.frontEnd.soundDetection {
             case .intercarrier:
                 extracted = extractor.extractIntercarrier(receiver.detectedVideo,frameIndex: input.frameIndex,
                     firstSampleIndex: system.video.sampleOffset(frame: input.frameIndex),
-                    sampleRate: system.video.sampleRate,carrierHz: system.soundCarrierHz)
+                    sampleRate: system.video.sampleRate,carrierHz: system.soundCarrierHz,
+                    profile: settings.performance)
             case .splitSound:
                 let shift = system.soundCarrierHz-Double(settings.tuningOffsetKHz)*1000
                 extracted = extractor.extract(i: reception.1.i,q: reception.1.q,frameIndex: input.frameIndex,
-                    firstSampleIndex: reception.1.firstSampleIndex,sampleRate: reception.1.sampleRate,shiftHz: shift)
+                    firstSampleIndex: reception.1.firstSampleIndex,sampleRate: reception.1.sampleRate,shiftHz: shift,
+                    profile: settings.performance)
             }
+            result.timings.soundExtraction = TerrestrialTimings.seconds(extractingStarted.duration(to: .now))
             // With common front-end AGC the gain is already in the shared IQ.
             let recoveryGain: Float = settings.frontEnd.agcEnabled ? 1 : receiver.currentGain
             let recovered = demodulator.demodulate(extracted,settings: settings,visionCorrectionHz: 0,
@@ -139,7 +154,8 @@ public struct TVUnifiedChannelEngine: Sendable {
             result.soundCarrierDB = recovered.carrierDB
             result.soundSeconds = recovered.seconds
             result.soundSpectrum = soundSpectrumAnalyzer.analyze(i: extracted.i,q: extracted.q,
-                rate: extracted.sampleRate,centerHz: system.soundCarrierHz)
+                rate: extracted.sampleRate,centerHz: system.soundCarrierHz,
+                windows: settings.performance.spectrumWindows)
         }
         result.transmitter.reflectedPower = result.transmitter.forwardPower*settings.transmitter.reflectedFraction
         return result

@@ -4,6 +4,35 @@ import Dispatch
 
 public enum TVExecution: String, Codable, Equatable, Sendable { case reference, accelerated }
 
+/// Diagnostic bypass for A/B runs with identical rendering/reporting overhead.
+/// Immutable for the process lifetime; normal apps keep the optimized path.
+enum TVOptimizationDiagnostics {
+    static let baseline = ProcessInfo.processInfo.arguments.contains("--benchmark-baseline")
+}
+
+/// Process-wide ceiling on every parallel DSP stage. Immutable for the process
+/// lifetime and read from the launch arguments, so a device sweep needs one
+/// build. The default is no ceiling, which leaves every existing worker count
+/// exactly as it was; a diagnostic run caps it to test whether spreading work
+/// over efficiency cores costs more than it buys on a given device.
+enum TVParallelDiagnostics {
+    static let workerLimit: Int = {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--benchmark-workers"), index+1 < arguments.count,
+              let value = Int(arguments[index+1]), value > 0 else { return Int.max }
+        return value
+    }()
+    /// Human-readable value for reports.
+    static var workerLimitDescription: String {
+        workerLimit == Int.max ? "unlimited" : String(workerLimit)
+    }
+}
+
+/// Apply the diagnostic ceiling to a stage's own worker count.
+@inline(__always) func cappedWorkers(_ requested: Int) -> Int {
+    min(requested,TVParallelDiagnostics.workerLimit)
+}
+
 /// Each worker owns disjoint elements. The owning array keeps this buffer alive
 /// until synchronous concurrentPerform returns; no pointer escapes that scope.
 private struct TVOutput<Value>: @unchecked Sendable {
@@ -42,7 +71,7 @@ public enum TVEngine {
         if execution == .reference || count < 32 {
             for n in 0..<count { body(n) }
         } else {
-            let workers = min(8, ProcessInfo.processInfo.activeProcessorCount, (count+31)/32)
+            let workers = cappedWorkers(min(8, ProcessInfo.processInfo.activeProcessorCount, (count+31)/32))
             DispatchQueue.concurrentPerform(iterations: workers) { worker in
                 let start = worker*count/workers, end = (worker+1)*count/workers
                 for n in start..<end { body(n) }
@@ -295,6 +324,15 @@ public enum TVEngine {
         // The previous transmitted line is row-2 within each field. Read the original
         // filtered U/V, so averaging does not cascade through successive lines.
         let decoded = decodedLines
+        // Every valid active line has the same length. Compute the exact pixel
+        // interpolation coordinates once, instead of repeating division/floor
+        // for all 720 * height pixels. The scalar path remains the oracle.
+        let activeLength = Int((s.activeDuration*s.sampleRate).rounded())
+        let interpolation = (0..<s.width).map { x -> (Int,Int,Float) in
+            let p = (Double(x)+0.5)*Double(activeLength)/Double(s.width)-0.5
+            let j = max(0,min(activeLength-1,Int(floor(p))))
+            return (j,min(activeLength-1,j+1),Float(max(0,p-Double(j))))
+        }
         var rgb = [SIMD3<Float>](repeating: .zero,count: s.width*s.height)
         rgb.withUnsafeMutableBufferPointer { storage in
             let output = TVOutput(buffer: storage)
@@ -303,19 +341,54 @@ public enum TVEngine {
                 let length = current.y.count
                 let previous = row >= 2 ? decoded[row-2] : nil
                 let delay = s == .pal && settings.palDelayLine && previous?.line == current.line-1 && previous?.u.count == length
-                for x in 0..<s.width {
-                    let p = (Double(x)+0.5)*Double(length)/Double(s.width)-0.5
-                    let j = max(0,min(length-1,Int(floor(p)))), k = min(length-1,j+1), f = Float(max(0,p-Double(j)))
-                    let yy = current.y[j]*(1-f)+current.y[k]*f
-                    let uj = delay ? (current.u[j]+previous!.u[j])*0.5 : current.u[j]
-                    let uk = delay ? (current.u[k]+previous!.u[k])*0.5 : current.u[k]
-                    let vj = delay ? (current.v[j]+previous!.v[j])*0.5 : current.v[j]
-                    let vk = delay ? (current.v[k]+previous!.v[k])*0.5 : current.v[k]
-                    let uu = uj*(1-f)+uk*f, vv = vj*(1-f)+vk*f
-                    let pixel: SIMD3<Float>
-                    if s == .pal { pixel = SIMD3(yy+1.14025*vv,yy-0.39473*uu-0.58081*vv,yy+2.03252*uu) }
-                    else { pixel = SIMD3(yy+0.956*uu+0.621*vv,yy-0.272*uu-0.647*vv,yy-1.106*uu+1.703*vv) }
-                    output.store(SIMD3(clamp(pixel.x),clamp(pixel.y),clamp(pixel.z)),at: row*s.width+x)
+                if execution == .accelerated, !TVOptimizationDiagnostics.baseline, length == activeLength {
+                    // Valid scanlines and the sampling plan bound every index.
+                    // Borrow once per row instead of rechecking every tap/pixel.
+                    let priorUValues = delay ? previous!.u : current.u
+                    let priorVValues = delay ? previous!.v : current.v
+                    current.y.withUnsafeBufferPointer { yp in
+                        current.u.withUnsafeBufferPointer { up in
+                            current.v.withUnsafeBufferPointer { vp in
+                                priorUValues.withUnsafeBufferPointer { priorU in
+                                    priorVValues.withUnsafeBufferPointer { priorV in
+                                        interpolation.withUnsafeBufferPointer { coordinates in
+                                            let y = yp.baseAddress!, u = up.baseAddress!, v = vp.baseAddress!
+                                            let pu = priorU.baseAddress!, pv = priorV.baseAddress!
+                                            let sample = coordinates.baseAddress!
+                                            for x in 0..<s.width {
+                                                let (j,k,f) = sample[x]
+                                                let yy = y[j]*(1-f)+y[k]*f
+                                                let uj = delay ? (u[j]+pu[j])*0.5 : u[j]
+                                                let uk = delay ? (u[k]+pu[k])*0.5 : u[k]
+                                                let vj = delay ? (v[j]+pv[j])*0.5 : v[j]
+                                                let vk = delay ? (v[k]+pv[k])*0.5 : v[k]
+                                                let uu = uj*(1-f)+uk*f, vv = vj*(1-f)+vk*f
+                                                let pixel: SIMD3<Float>
+                                                if s == .pal { pixel = SIMD3(yy+1.14025*vv,yy-0.39473*uu-0.58081*vv,yy+2.03252*uu) }
+                                                else { pixel = SIMD3(yy+0.956*uu+0.621*vv,yy-0.272*uu-0.647*vv,yy-1.106*uu+1.703*vv) }
+                                                output.store(SIMD3(clamp(pixel.x),clamp(pixel.y),clamp(pixel.z)),at: row*s.width+x)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    for x in 0..<s.width {
+                        let p = (Double(x)+0.5)*Double(length)/Double(s.width)-0.5
+                        let j = max(0,min(length-1,Int(floor(p)))), k = min(length-1,j+1), f = Float(max(0,p-Double(j)))
+                        let yy = current.y[j]*(1-f)+current.y[k]*f
+                        let uj = delay ? (current.u[j]+previous!.u[j])*0.5 : current.u[j]
+                        let uk = delay ? (current.u[k]+previous!.u[k])*0.5 : current.u[k]
+                        let vj = delay ? (current.v[j]+previous!.v[j])*0.5 : current.v[j]
+                        let vk = delay ? (current.v[k]+previous!.v[k])*0.5 : current.v[k]
+                        let uu = uj*(1-f)+uk*f, vv = vj*(1-f)+vk*f
+                        let pixel: SIMD3<Float>
+                        if s == .pal { pixel = SIMD3(yy+1.14025*vv,yy-0.39473*uu-0.58081*vv,yy+2.03252*uu) }
+                        else { pixel = SIMD3(yy+0.956*uu+0.621*vv,yy-0.272*uu-0.647*vv,yy-1.106*uu+1.703*vv) }
+                        output.store(SIMD3(clamp(pixel.x),clamp(pixel.y),clamp(pixel.z)),at: row*s.width+x)
+                    }
                 }
             }
         }

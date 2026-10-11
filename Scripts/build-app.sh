@@ -1,15 +1,28 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-swift build -c release
-BIN_DIR=$(swift build -c release --show-bin-path)
+BUILD_CONFIGURATION=${1:-release}
+case "$BUILD_CONFIGURATION" in
+    release|debug) ;;
+    *) printf 'Expected build configuration: release or debug\n' >&2; exit 2 ;;
+esac
+if [ "$BUILD_CONFIGURATION" = debug ]; then
+    printf 'Debug build: DSP is unoptimized. Use ./build.sh --release for video playback.\n' >&2
+fi
+if [ "$#" -gt 1 ]; then
+    printf 'Usage: sh Scripts/build-app.sh [release|debug]\n' >&2
+    exit 2
+fi
+swift build -c "$BUILD_CONFIGURATION"
+BIN_DIR=$(swift build -c "$BUILD_CONFIGURATION" --show-bin-path)
 APP="build/AnaLine.app/Contents"
 BUILD_ID=$(printf '%X' "$(date +%s)")
 BUILD_TIME=$(date '+%Y-%m-%d %H:%M:%S %z')
 mkdir -p "$APP/MacOS" "$APP/Resources"
 cp "$BIN_DIR/AnaLine" "$APP/MacOS/AnaLine.next"
 mv -f "$APP/MacOS/AnaLine.next" "$APP/MacOS/AnaLine"
-sed -e "s/__BUILD_ID__/$BUILD_ID/g" -e "s/__BUILD_TIME__/$BUILD_TIME/g" Scripts/Info.plist > "$APP/Info.plist"
+sed -e "s/__BUILD_ID__/$BUILD_ID/g" -e "s/__BUILD_TIME__/$BUILD_TIME/g" \
+    -e "s/__BUILD_CONFIGURATION__/$BUILD_CONFIGURATION/g" Scripts/Info.plist > "$APP/Info.plist"
 # The local sample is excluded from version control.
 if [ -f Assets/bliss.jpg ]; then
     cp Assets/bliss.jpg "$APP/Resources/bliss.jpg"

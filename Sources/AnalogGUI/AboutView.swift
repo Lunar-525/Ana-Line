@@ -11,6 +11,13 @@ struct AnaLineAboutCommands: Commands {
 }
 
 struct AnaLineAboutView: View {
+    private var configuration: String {
+        #if DEBUG
+        return "Debug · DSP unoptimized"
+        #else
+        return "Release · DSP optimized"
+        #endif
+    }
     private var version: String? {
         let info = Bundle.main.infoDictionary ?? [:]
         let build = info["CFBundleVersion"] as? String
@@ -33,6 +40,9 @@ struct AnaLineAboutView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Text(configuration)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(40)
         .frame(width: 440)

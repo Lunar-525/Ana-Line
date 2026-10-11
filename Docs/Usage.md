@@ -9,7 +9,7 @@
 顶部可切换 **Film Damage / SSTV / Terrestrial**，各模式参数独立。SSTV 实现选型见 [调研记录](SSTV-research.md)。
 
 ```sh
-swift run AnaLine
+swift run -c release AnaLine
 ```
 
 默认载入 `Assets/bliss.jpg`，后台处理后左侧显示原图、右侧显示结果。拖动虚线或图片任意位置可改变分界。
@@ -25,7 +25,7 @@ GUI 支持 LUT Mix、程序颗粒与程序漏光；旧版色调曲线、灰尘�
 命令行算法保持可用。
 “选择图片”按钮可以切换输入，失败时保留上一次成功的预览。
 GUI 为 CPU 预览将输入最长边限制为 1400 像素，窗口缩放不会重新生成随机损伤。
-也可使用 `swift run AnaLine /完整路径/image.jpg` 指定图片。
+也可使用 `swift run -c release AnaLine /完整路径/image.jpg` 指定图片。
 使用 `sh Scripts/build-app.sh` 可构建 Release App 并复制样图、LUT 与许可证。
 Film-Luts 来源与许可说明见 `Assets/FilmLuts/ATTRIBUTION.md`。
 完整资源目录、色彩空间声明和许可说明见 `Assets/LUTLibrary/ATTRIBUTION.md`。

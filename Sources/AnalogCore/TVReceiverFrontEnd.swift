@@ -1,5 +1,6 @@
 import Foundation
 import Accelerate
+import Dispatch
 
 /// Second-order IIR notch at a known companion-carrier frequency. It has unity
 /// DC gain, bounded state and a narrow notch, so it removes the sound beat from
@@ -114,6 +115,7 @@ public struct TVFrontEndSettings: Codable, Equatable, Sendable {
 /// saturation is referenced to the input level rather than the PA backoff.
 struct TVReceiverAmplifier: Sendable {
     private var table = [SIMD2<Float>]()
+    private var highPowerTable = [SIMD2<Float>]()
     private var cachedSaturation: Float = .nan
     private var cachedHardness: Float = .nan
     private var cachedAMPM: Float = .nan
@@ -135,8 +137,18 @@ struct TVReceiverAmplifier: Sendable {
         if cachedSaturation != saturationPower || cachedHardness != hardness || cachedAMPM != amPMDegrees {
             cachedSaturation = saturationPower; cachedHardness = hardness; cachedAMPM = amPMDegrees
             table = (0...1024).map {
-                Self.coefficient(power: Double($0)/256,saturationPower: saturationPower,
+                Self.coefficient(power: Double($0)/256,saturationPower: 1,
                                  hardness: hardness,amPMDegrees: amPMDegrees)
+            }
+            // Above four times saturation, tabulate normalized output amplitude
+            // against inverse power. This covers arbitrary overload without
+            // clamping the compression coefficient or calling pow per sample.
+            let p = 1+3*Double(hardness)
+            highPowerTable = (0...1024).map {
+                let inverse = Double($0)/4096
+                let amplitude = pow(1+pow(inverse,p),-1/(2*p))
+                let phase = Double(amPMDegrees)*Double.pi/180/(1+inverse)
+                return SIMD2(Float(amplitude*cos(phase)),Float(amplitude*sin(phase)))
             }
         }
         peakCompression = 1
@@ -145,10 +157,18 @@ struct TVReceiverAmplifier: Sendable {
                 table.withUnsafeBufferPointer { tp in
                     let ri = ip.baseAddress!, rq = qp.baseAddress!, coefficients = tp.baseAddress!
                     for n in 0..<ip.count {
-                        let power = Double(ri[n]*ri[n]+rq[n]*rq[n])
-                        let position = min(1024.0,power*256)
+                        let power = Double(ri[n])*Double(ri[n])+Double(rq[n])*Double(rq[n])
+                        let ratio = power/Double(saturationPower)
+                        let highPower = ratio > 4
+                        let position = highPower ? 4096/ratio : ratio*256
                         let index = min(1023,Int(position)), fraction = Float(position-Double(index))
-                        let coefficient = coefficients[index]+(coefficients[index+1]-coefficients[index])*fraction
+                        let coefficient: SIMD2<Float>
+                        if highPower {
+                            coefficient = (highPowerTable[index]+(highPowerTable[index+1]-highPowerTable[index])*fraction)
+                                * Float(1/sqrt(ratio))
+                        } else {
+                            coefficient = coefficients[index]+(coefficients[index+1]-coefficients[index])*fraction
+                        }
                         peakCompression = min(peakCompression,hypot(coefficient.x,coefficient.y))
                         let a = ri[n], b = rq[n]
                         ri[n] = a*coefficient.x-b*coefficient.y
@@ -181,6 +201,27 @@ public struct TVFrontEndOutput: Sendable {
     public var count: Int { i.count }
 }
 
+/// Each synchronous worker owns a disjoint output range. The exact phase
+/// at that range's first sample preserves the existing oscillator frequency.
+private struct TVTunerWork: @unchecked Sendable {
+    let i: UnsafeBufferPointer<Float>, q: UnsafeBufferPointer<Float>
+    let outI: UnsafeMutableBufferPointer<Float>, outQ: UnsafeMutableBufferPointer<Float>
+    let phase: Double, step: Double
+    func run(_ range: Range<Int>) {
+        var x = cos(phase+step*Double(range.lowerBound))
+        var y = sin(phase+step*Double(range.lowerBound))
+        let c = cos(step), s = sin(step)
+        let a = i.baseAddress!, b = q.baseAddress!
+        let r = outI.baseAddress!, out = outQ.baseAddress!
+        for n in range {
+            r[n] = a[n]*Float(x)-b[n]*Float(y)
+            out[n] = a[n]*Float(y)+b[n]*Float(x)
+            let next = x*c-y*s; y = x*s+y*c; x = next
+            if n & 1023 == 0 { let norm = hypot(x,y); x /= norm; y /= norm }
+        }
+    }
+}
+
 /// One tuning pass and one common IF filter, shared by vision and sound. The
 /// processing order is fixed and documented: fixed-coordinate RF tap, common
 /// gain once, RF input nonlinearity, tuning, IF filter, IF nonlinearity. Each
@@ -200,12 +241,13 @@ public struct TVReceiverFrontEnd: Sendable {
     public mutating func process(_ input: TVChannelIQ, settings: TerrestrialSettings) throws -> TVFrontEndOutput {
         let started = ContinuousClock.now
         try input.validate()
-        guard input.system == system else { throw TVError.invalidSignal }
+        guard input.system == system, input.sampleRate == system.video.sampleRate else { throw TVError.invalidSignal }
         try settings.validate(rate: input.sampleRate)
         let rate = input.sampleRate, count = input.count, front = settings.frontEnd
         // Fixed RF coordinates, before gain or nonlinearity: the displayed
         // spectrum must not show receiver distortion that has not happened yet.
-        let spectrum = spectrumAnalyzer.analyze(i: input.i, q: input.q, rate: rate)
+        let spectrum = spectrumAnalyzer.analyze(i: input.i, q: input.q, rate: rate,
+                                                windows: settings.performance.spectrumWindows)
         var re = input.i, im = input.q
         // Common front-end gain, applied exactly once ahead of the input stage.
         if front.gainDB != 0 {
@@ -230,6 +272,17 @@ public struct TVReceiverFrontEnd: Sendable {
             let sourceI = re, sourceQ = im
             tunerPhase = sourceI.withUnsafeBufferPointer { a in sourceQ.withUnsafeBufferPointer { b in
                 re.withUnsafeMutableBufferPointer { r in im.withUnsafeMutableBufferPointer { out in
+                    if settings.execution == .accelerated && !TVOptimizationDiagnostics.baseline {
+                        let work = TVTunerWork(i: a,q: b,outI: r,outQ: out,phase: initial,step: step)
+                        let workers = cappedWorkers(min(ProcessInfo.processInfo.activeProcessorCount,max(1,count/65_536)))
+                        if workers > 1 {
+                            DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                                work.run(worker*count/workers ..< (worker+1)*count/workers)
+                            }
+                        } else { work.run(0..<count) }
+                        let finalPhase = initial+step*Double(count)
+                        return atan2(sin(finalPhase),cos(finalPhase))
+                    }
                     var x = cos(initial), y = sin(initial)
                     for n in 0..<count {
                         r[n] = a[n]*Float(x)-b[n]*Float(y); out[n] = a[n]*Float(y)+b[n]*Float(x)

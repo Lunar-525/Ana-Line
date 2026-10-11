@@ -1,0 +1,112 @@
+{
+  "channel" : {
+    "automaticFineTuning" : true,
+    "automaticGain" : true,
+    "carrierToNoiseDB" : 100,
+    "decoder" : {
+      "chromaLeakage" : 0,
+      "combFailure" : 0,
+      "palDelayLine" : true,
+      "separation" : "notch"
+    },
+    "echoDelayMicroseconds" : 2,
+    "echoGain" : 0,
+    "echoPhaseDegrees" : 0,
+    "execution" : "accelerated",
+    "frontEnd" : {
+      "agcEnabled" : false,
+      "enabled" : false,
+      "gainDB" : 0,
+      "ifAMPMDegrees" : 0,
+      "ifHardness" : 1,
+      "ifSaturationDB" : 60,
+      "inputAMPMDegrees" : 30,
+      "inputHardness" : 1,
+      "inputSaturationDB" : 0,
+      "soundDetection" : "splitSound",
+      "soundNotchPolicy" : "suppressed",
+      "videoLowpassEnabled" : false
+    },
+    "manualGainDB" : 0,
+    "propagation" : {
+      "antenna" : "Yagi",
+      "antennaElevationDegrees" : 0,
+      "antennaGainDB" : 12,
+      "distanceKm" : 10,
+      "enabled" : false,
+      "frequencyMHz" : 600,
+      "groundReflection" : 0,
+      "receiverHeightM" : 20,
+      "refractionK" : 1.3333333999999999,
+      "ridgeEnabled" : false,
+      "ridgeHeightM" : 65,
+      "ridgePosition" : 0.5,
+      "transmitterHeightM" : 120,
+      "weather" : {
+        "clutter" : 0.5,
+        "enabled" : false,
+        "fogGramsM3" : 0,
+        "humidityPercent" : 50,
+        "ionization" : 0,
+        "lightning" : 0,
+        "lightningRatePerMinute" : 30,
+        "rainMMHour" : 0,
+        "snowMMHour" : 0,
+        "sunlight" : 0.5,
+        "temperatureC" : 20
+      }
+    },
+    "receiverDamage" : {
+      "agcEnabled" : false,
+      "agcOvershoot" : 0,
+      "agcPictureSensitivity" : 0,
+      "agcResponseMS" : 250,
+      "horizontalDeadZoneUS" : 0,
+      "horizontalJitterUS" : 0,
+      "horizontalOscillatorPPM" : 0,
+      "horizontalResponseMS" : 1,
+      "syncEnabled" : false,
+      "verticalCaptureLines" : 8,
+      "verticalHoldHz" : 0
+    },
+    "rfBandwidthMHz" : 6,
+    "seed" : 42,
+    "signalDB" : 0,
+    "transmitter" : {
+      "audioDriveDB" : 0,
+      "backoffDB" : 6,
+      "enabled" : false,
+      "encoder" : {
+        "burstAmplitude" : 1,
+        "burstDriftDegrees" : 0,
+        "burstDriftHz" : 0.25,
+        "burstPhaseDegrees" : 0,
+        "differentialGain" : 0,
+        "differentialPhaseDegrees" : 0,
+        "enabled" : false
+      },
+      "hardness" : 0.5,
+      "loadVSWR" : 1,
+      "phaseDegrees" : 0,
+      "powerDB" : 0,
+      "sharedCoupling" : 0,
+      "vsb" : {
+        "enabled" : false,
+        "groupDelayNS" : 0,
+        "peakingDB" : 0,
+        "transitionMHz" : 0.20000000000000001
+      }
+    },
+    "tuningOffsetKHz" : 0
+  },
+  "format" : "AnaLine Terrestrial Session",
+  "muted" : false,
+  "position" : 0,
+  "standard" : "ntsc",
+  "version" : 1,
+  "video" : {
+    "name" : "crosstalk-source.mkv",
+    "path" : "/Users/fanxuancheng/Documents/Ana-LIne/Demos/AV-Crosstalk/crosstalk-source.mkv",
+    "relativePath" : "crosstalk-source.mkv"
+  }
+}

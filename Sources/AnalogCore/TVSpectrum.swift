@@ -26,14 +26,18 @@ final class TVSpectrumAnalyzer: @unchecked Sendable {
         normalization = 1 / (Float(size) * window.reduce(0) { $0 + $1 * $1 })
     }
     deinit { vDSP_destroy_fftsetup(fft) }
-    func analyze(i: [Float], q: [Float], rate: Double, centerHz: Double = 0) -> TVSpectrum? {
+    /// `windows` limits how many short windows are averaged. Power is normalized
+    /// by the window count, so this changes the variance of the estimate (and
+    /// therefore the refresh cost), never its mean.
+    func analyze(i: [Float], q: [Float], rate: Double, centerHz: Double = 0,
+                 windows requestedWindows: Int = 8) -> TVSpectrum? {
         let size = window.count
         guard i.count == q.count, i.count >= size, rate.isFinite, rate > 0 else { return nil }
         var re = [Float](repeating: 0, count: size), im = re
         var powers = re
-        // Average eight short windows distributed across the frame. Do not
-        // decimate IQ: that would alias the VSB sidebands into the displayed band.
-        let windows = min(8, i.count / size)
+        // Average short windows distributed across the frame. Do not decimate IQ:
+        // that would alias the VSB sidebands into the displayed band.
+        let windows = min(max(1,requestedWindows), i.count / size)
         i.withUnsafeBufferPointer { ip in
             q.withUnsafeBufferPointer { qp in
                 for segment in 0..<windows {

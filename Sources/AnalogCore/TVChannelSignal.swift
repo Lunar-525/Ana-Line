@@ -39,7 +39,8 @@ public struct TVChannelIQ: Sendable {
     }
     func validate() throws {
         let clock = TVChannelClock(system: system, sampleRate: sampleRate)
-        guard frameIndex >= 0, frameIndex < 1_000_000_000,
+        guard sampleRate.isFinite, sampleRate > 0, sampleRate <= 1_000_000_000,
+              frameIndex >= 0, frameIndex < 1_000_000_000,
               firstSampleIndex == clock.offset(frame: frameIndex),
               i.count == clock.count(frame: frameIndex), i.count == q.count,
               i.allSatisfy(\.isFinite), q.allSatisfy(\.isFinite) else { throw TVError.invalidSignal }

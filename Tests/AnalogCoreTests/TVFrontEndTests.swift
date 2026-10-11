@@ -104,6 +104,40 @@ final class TVFrontEndTests: XCTestCase {
 
     // MARK: - Front-end integration
 
+    func testAmplifierSaturatesAcrossGainAndSaturationRanges() {
+        for saturation: Float in [0.0001, 0.1, 1, 1000] {
+            for ratio: Float in [0.001, 1, 4, 10, 10_000, 100_000_000] {
+                var amplifier = TVReceiverAmplifier()
+                let amplitude = sqrt(saturation*ratio)
+                var i = [amplitude], q: [Float] = [0]
+                _ = amplifier.apply(i: &i,q: &q,saturationPower: saturation,hardness: 0.5,amPMDegrees: 30)
+                let reference = TVReceiverAmplifier.coefficient(power: Double(amplitude)*Double(amplitude),
+                    saturationPower: saturation,hardness: 0.5,amPMDegrees: 30)
+                XCTAssertEqual(i[0],amplitude*reference.x,accuracy: sqrt(saturation)*0.0001)
+                XCTAssertEqual(q[0],amplitude*reference.y,accuracy: sqrt(saturation)*0.0001)
+                XCTAssertLessThanOrEqual(hypot(i[0],q[0]),sqrt(saturation)*1.0001)
+            }
+        }
+    }
+
+    func testSharedManualGainDoesNotAccumulateAcrossFrames() throws {
+        for system in TerrestrialSystem.allCases {
+            var engine = TVUnifiedChannelEngine(system: system)
+            var settings = TerrestrialSettings(system: system)
+            settings.frontEnd.agcEnabled = true
+            settings.automaticGain = false
+            settings.manualGainDB = 6
+            settings.signalDB = -6
+            settings.carrierToNoiseDB = 90
+            let source = TVFrame.colorBars(system.video)
+            for frame: Int64 in 0..<6 {
+                let result = try engine.process(TVEngine.encode(source,frameIndex: frame),settings: settings)
+                XCTAssertEqual(result.frontEndGainDB,6,accuracy: 0.001)
+                if frame > 0 { XCTAssertEqual(result.lock,.locked) }
+            }
+        }
+    }
+
     func testFrontEndInfiniteHeadroomMatchesCleanReference() throws {
         let system = TerrestrialSystem.palDK
         let input = channel(system,hz: 1_000_000,amplitude: 0.3)

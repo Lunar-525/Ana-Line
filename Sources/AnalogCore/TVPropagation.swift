@@ -223,7 +223,7 @@ struct TVSceneChannel: Sendable {
             xi.withUnsafeBufferPointer { xp in xq.withUnsafeBufferPointer { yp in
                     re.withUnsafeMutableBufferPointer { rp in im.withUnsafeMutableBufferPointer { mp in
                         let samples = TVPropagationSamples(x: xp,y: yp,re: rp,im: mp)
-                        let workers = min(8,max(1,count/32_768))
+                        let workers = cappedWorkers(min(8,max(1,count/32_768)))
                         DispatchQueue.concurrentPerform(iterations: workers) { worker in
                             let range = worker*count/workers..<(worker+1)*count/workers
                             for (delay,amplitude,phase,doppler) in paths {
@@ -253,7 +253,7 @@ struct TVSceneChannel: Sendable {
         i.withUnsafeMutableBufferPointer { ip in q.withUnsafeMutableBufferPointer { qp in
             if ion > 0 {
                 let samples = TVInterferenceSamples(re: ip,im: qp)
-                let workers = execution == .accelerated ? min(8,max(1,count/32_768)) : 1
+                let workers = execution == .accelerated ? cappedWorkers(min(8,max(1,count/32_768))) : 1
                 DispatchQueue.concurrentPerform(iterations: workers) { worker in
                     samples.addRemote(worker*count/workers..<(worker+1)*count/workers,
                         amplitude: Float(0.7*ion),rate: rate,time: time,sound: carrierOffsetHz > 1e6)

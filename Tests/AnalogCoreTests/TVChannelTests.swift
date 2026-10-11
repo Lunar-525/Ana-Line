@@ -31,6 +31,28 @@ final class TVChannelTests: XCTestCase {
 
     // MARK: - Resampler
 
+    func testInvalidChannelRatesThrowBeforeClockConversion() {
+        for rate in [Double.nan, .infinity, -.infinity, 0, -1, Double.greatestFiniteMagnitude] {
+            let input = TVChannelIQ(system: .palDK,frameIndex: 0,firstSampleIndex: 0,sampleRate: rate,i: [],q: [])
+            XCTAssertThrowsError(try input.validate())
+        }
+    }
+
+    func testCombinerRejectsMismatchedSoundBeforeResampling() throws {
+        let system = TerrestrialSystem.palDK
+        let cvbs = try TVEngine.encode(TVFrame.colorBars(system.video))
+        var modulator = VSBModulator(system: system)
+        let vision = try modulator.modulate(cvbs)
+        var combiner = TVChannelModulator(system: system)
+        for sound in [
+            TVSoundIQ(system: system,frameIndex: 0,sampleRate: .nan,i: [],q: []),
+            TVSoundIQ(system: system,frameIndex: 0,sampleRate: 384_000,i: [1],q: []),
+            TVSoundIQ(system: .ntscM,frameIndex: 0,sampleRate: 384_000,i: [],q: [])
+        ] {
+            XCTAssertThrowsError(try combiner.combine(vision: vision,sound: sound))
+        }
+    }
+
     private func tone(_ rate: Double, _ hz: Double, _ count: Int) -> ([Float],[Float]) {
         var i = [Float](repeating: 0, count: count), q = i
         for n in 0..<count {

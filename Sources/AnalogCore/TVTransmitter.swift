@@ -9,11 +9,17 @@ private struct TVPASamples: @unchecked Sendable {
     let table: UnsafeBufferPointer<SIMD2<Float>>
     let other: UnsafeBufferPointer<Float>, coupling: Float
     let re: UnsafeMutableBufferPointer<Float>, im: UnsafeMutableBufferPointer<Float>
+    /// Curve table extent (points) and the drive-power scale that maps onto it.
+    let tableSpan: Double, tableScale: Double, tableSpanF: Float, tableScaleF: Float
+    /// Evaluate the curve lookup in single precision. The table interpolates,
+    /// so this only moves the last bits of the interpolation coordinate.
+    let coarseIndex: Bool
     func process(_ range: Range<Int>, previous: SIMD2<Float>) -> Float {
         var peak: Float = 0
         var prior = range.lowerBound == 0 ? previous : SIMD2(i[range.lowerBound-1],q[range.lowerBound-1])
         let constantPower = other.count == 1 ? coupling*other[0] : 0
         let otherScale = Double(other.count)/Double(i.count)
+        let maximumIndex = Int(tableSpan)-1
         for n in range {
             let external = other.count > 1 ? coupling*other[min(other.count-1,Int(Double(n)*otherScale))] : constantPower
             let current = SIMD2(i[n],q[n])
@@ -21,8 +27,16 @@ private struct TVPASamples: @unchecked Sendable {
                 let x = half == 0 ? (prior+current)*0.5 : current
                 let power = x.x*x.x+x.y*x.y+external
                 peak = max(peak,power)
-                let position = min(8192,max(0,Double(power)*512))
-                let index = min(8191,Int(position)), fraction = Float(position-Double(index))
+                let index: Int, fraction: Float
+                if coarseIndex {
+                    let position = min(tableSpanF,max(0,power*tableScaleF))
+                    index = min(maximumIndex,Int(position))
+                    fraction = position-Float(index)
+                } else {
+                    let position = min(tableSpan,max(0,Double(power)*tableScale))
+                    index = min(maximumIndex,Int(position))
+                    fraction = Float(position-Double(index))
+                }
                 let c = table[index]+(table[index+1]-table[index])*fraction
                 re[n*2+half] = x.x*c.x-x.y*c.y; im[n*2+half] = x.x*c.y+x.y*c.x
             }
@@ -109,6 +123,8 @@ struct TVTransmitterAmplifier: Sendable {
     private(set) var meanOutputPower: Float = 0
     private var cached: SIMD3<Float>?
     private var factors = [SIMD2<Float>]()
+    private var tablePoints = -1
+    private var filterRadius = -1
     private var previous = SIMD2<Float>(0,0)
     private var realFilter: TelevisionFIR?
     private var imaginaryFilter: TelevisionFIR?
@@ -119,21 +135,28 @@ struct TVTransmitterAmplifier: Sendable {
         let phase = Double(settings.phaseDegrees)*Double.pi/180*ratio/(1+ratio)
         return SIMD2(Float(compression*cos(phase)),Float(compression*sin(phase)))
     }
-    mutating func apply(i: [Float], q: [Float], settings: TVTransmitterSettings, execution: TVExecution, otherPower: [Float] = []) -> ([Float],[Float]) {
+    mutating func apply(i: [Float], q: [Float], settings: TVTransmitterSettings, execution: TVExecution,
+                        otherPower: [Float] = [], profile: TVChainProfile = .full) -> ([Float],[Float]) {
         guard settings.enabled, !i.isEmpty else {
             peakDrivePower = 0
             meanOutputPower = TVTransmitterTelemetry.meanPower(i: i,q: q)
             previous = SIMD2(i.last ?? 0,q.last ?? 0)
-            realFilter = nil; imaginaryFilter = nil
+            realFilter = nil; imaginaryFilter = nil; filterRadius = -1
             return (i,q)
         }
         let curve = SIMD3(settings.backoffDB,settings.hardness,settings.phaseDegrees)
-        if cached != curve {
-            factors = (0...8192).map { Self.coefficient(power: Double($0)/512,settings: settings) }
-            cached = curve
+        let points = profile.amplifierTablePoints
+        if cached != curve || tablePoints != points {
+            // The table spans normalized drive power 0...16 at P+1 points, so the
+            // curve itself is unchanged; only its sampling density moves.
+            factors = (0...points).map {
+                Self.coefficient(power: Double($0)*16/Double(points),settings: settings)
+            }
+            cached = curve; tablePoints = points
         }
-        if realFilter == nil {
-            let radius = 12, fc = 0.225 // relative to the 2x sampling rate
+        let antialiasRadius = profile.amplifierAntiAliasRadius
+        if realFilter == nil || filterRadius != antialiasRadius {
+            let radius = antialiasRadius, fc = 0.225 // relative to the 2x sampling rate
             var kernel = (-radius...radius).map { n in
                 let sinc = n == 0 ? 2 * fc : sin(2 * Double.pi * fc * Double(n)) / (Double.pi * Double(n))
                 let taper = 0.54 + 0.46 * cos(Double.pi * Double(n) / Double(radius))
@@ -141,10 +164,12 @@ struct TVTransmitterAmplifier: Sendable {
             }
             let sum = kernel.reduce(0,+); for n in kernel.indices { kernel[n] /= sum }
             realFilter = TelevisionFIR(kernel); imaginaryFilter = TelevisionFIR(kernel)
+            filterRadius = antialiasRadius
         }
         var re = [Float](repeating: 0,count: i.count*2), im = re
         let count = i.count, initial = previous
-        let workers = execution == .accelerated ? min(8,max(1,count/32_768)) : 1
+        let workers = execution == .accelerated ? cappedWorkers(min(8,max(1,count/32_768))) : 1
+        let tableSpan = Double(points), tableSpanF = Float(points)
         var peaks = [Float](repeating: 0,count: workers)
         peaks.withUnsafeMutableBufferPointer { peakBuffer in
         let reduction = TVPAPeaks(values: peakBuffer)
@@ -152,7 +177,11 @@ struct TVTransmitterAmplifier: Sendable {
             otherPower.withUnsafeBufferPointer { other in
             factors.withUnsafeBufferPointer { table in
                 re.withUnsafeMutableBufferPointer { rp in im.withUnsafeMutableBufferPointer { mp in
-                    let samples = TVPASamples(i: ip,q: qp,table: table,other: other,coupling: 2*settings.sharedCoupling,re: rp,im: mp)
+                    let samples = TVPASamples(i: ip,q: qp,table: table,other: other,
+                        coupling: 2*settings.sharedCoupling,re: rp,im: mp,
+                        tableSpan: tableSpan, tableScale: tableSpan/16,
+                        tableSpanF: tableSpanF, tableScaleF: tableSpanF/16,
+                        coarseIndex: profile != .full)
                     DispatchQueue.concurrentPerform(iterations: workers) { worker in
                         reduction.values[worker] = samples.process(worker*count/workers..<(worker+1)*count/workers,previous: initial)
                     }

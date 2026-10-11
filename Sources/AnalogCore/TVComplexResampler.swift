@@ -14,7 +14,14 @@ private struct TVResamplerWork: @unchecked Sendable {
     let ratio: Double
     let fullStart: Int64
     let outputStart: Int64
+    /// Accumulate the tap sum in single precision. The kernel, the tap positions
+    /// and the output rate are unchanged, so the filter response is unchanged;
+    /// only the rounding of the sum moves, by far less than one output LSB.
+    let singlePrecision: Bool
     func run(_ range: Range<Int>) {
+        if singlePrecision { runSingle(range) } else { runDouble(range) }
+    }
+    private func runDouble(_ range: Range<Int>) {
         let sampleCount = x.count
         let xb = x.baseAddress!, yb = y.baseAddress!, tb = table.baseAddress!
         let oi = outI.baseAddress!, oq = outQ.baseAddress!
@@ -29,14 +36,56 @@ private struct TVResamplerWork: @unchecked Sendable {
             let offset = phase*tapCount
             let first = Int64(base)-Int64(kernelRadius)
             var si = 0.0, sq = 0.0
-            for k in 0..<tapCount {
-                let local = Int(first+Int64(k)-fullStart)
-                if local >= 0, local < sampleCount {
+            let localFirst = Int(first-fullStart)
+            if localFirst >= 0, localFirst <= sampleCount-tapCount {
+                // Almost every output has its entire FIR window in the block.
+                // Check that window once so the hot dot products have no
+                // per-tap branches or absolute-index conversions.
+                for k in 0..<tapCount {
+                    let weight = Double(tb[offset+k])
+                    si += weight*Double(xb[localFirst+k]); sq += weight*Double(yb[localFirst+k])
+                }
+            } else {
+                for k in 0..<tapCount {
+                    let local = localFirst+k
+                    guard local >= 0, local < sampleCount else { continue }
                     let weight = Double(tb[offset+k])
                     si += weight*Double(xb[local]); sq += weight*Double(yb[local])
                 }
             }
             oi[m] = Float(si); oq[m] = Float(sq)
+        }
+    }
+    private func runSingle(_ range: Range<Int>) {
+        let sampleCount = x.count
+        let xb = x.baseAddress!, yb = y.baseAddress!, tb = table.baseAddress!
+        let oi = outI.baseAddress!, oq = outQ.baseAddress!
+        for m in range {
+            let position = Double(outputStart+Int64(m))*ratio
+            let center = position-Double(kernelRadius)
+            let base = center.rounded(.down)
+            let fraction = center-base
+            var phase = Int(fraction*Double(phaseCount))
+            if phase >= phaseCount { phase = phaseCount-1 }
+            if phase < 0 { phase = 0 }
+            let offset = phase*tapCount
+            let first = Int64(base)-Int64(kernelRadius)
+            var si: Float = 0, sq: Float = 0
+            let localFirst = Int(first-fullStart)
+            if localFirst >= 0, localFirst <= sampleCount-tapCount {
+                for k in 0..<tapCount {
+                    let weight = tb[offset+k]
+                    si += weight*xb[localFirst+k]; sq += weight*yb[localFirst+k]
+                }
+            } else {
+                for k in 0..<tapCount {
+                    let local = localFirst+k
+                    guard local >= 0, local < sampleCount else { continue }
+                    let weight = tb[offset+k]
+                    si += weight*xb[local]; sq += weight*yb[local]
+                }
+            }
+            oi[m] = si; oq[m] = sq
         }
     }
 }
@@ -55,6 +104,9 @@ public struct TVComplexResampler: Sendable {
     public let outputRate: Double
     public let radius: Int
     public let phases: Int
+    /// Sum the tap products in single precision. Diagnostic and profile knob;
+    /// the kernel and tap positions are unaffected.
+    public let singlePrecisionAccumulation: Bool
     public var taps: Int { 2*radius+1 }
     public var latencySeconds: Double { Double(radius)/inputRate }
     /// Flattened phase bank: phases * taps.
@@ -63,10 +115,12 @@ public struct TVComplexResampler: Sendable {
     private var historyI: [Float]
     private var historyQ: [Float]
 
-    public init(inputRate: Double, outputRate: Double, radius: Int = 8, phases: Int = 512) {
+    public init(inputRate: Double, outputRate: Double, radius: Int = 8, phases: Int = 512,
+                singlePrecisionAccumulation: Bool = false) {
         precondition(inputRate > 0 && outputRate > 0 && radius >= 1 && phases >= 2)
         self.inputRate = inputRate; self.outputRate = outputRate
         self.radius = radius; self.phases = phases
+        self.singlePrecisionAccumulation = singlePrecisionAccumulation
         historyCount = 2*radius+2
         historyI = [Float](repeating: 0, count: historyCount)
         historyQ = [Float](repeating: 0, count: historyCount)
@@ -116,8 +170,9 @@ public struct TVComplexResampler: Sendable {
                         weightTable.withUnsafeBufferPointer { wp in
                             let work = TVResamplerWork(x: xp,y: yp,table: wp,outI: op,outQ: oq,
                                 tapCount: tapCount,phaseCount: phaseCount,kernelRadius: kernelRadius,
-                                ratio: ratio,fullStart: fullStart,outputStart: outputStart)
-                            let workers = min(12,max(1,outputCount/32_768))
+                                ratio: ratio,fullStart: fullStart,outputStart: outputStart,
+                                singlePrecision: singlePrecisionAccumulation)
+                            let workers = cappedWorkers(min(12,max(1,outputCount/32_768)))
                             if workers > 1 {
                                 DispatchQueue.concurrentPerform(iterations: workers) { worker in
                                     work.run(worker*outputCount/workers ..< (worker+1)*outputCount/workers)

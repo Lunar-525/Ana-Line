@@ -54,6 +54,7 @@ public struct TVSoundExtractor: Sendable {
     private let radius: Int
     private var resampler: TVComplexResampler?
     private var configuredInputRate: Double = 0
+    private var configuredProfile: TVChainProfile?
     private var phase = 0.0
 
     public init(system: TerrestrialSystem, outputRate: Double = 384_000, radius: Int = 12) {
@@ -62,13 +63,23 @@ public struct TVSoundExtractor: Sendable {
 
     /// Drop NCO phase and FIR history when the receive mode or source changes.
     public mutating func reset() {
-        resampler = nil; configuredInputRate = 0; phase = 0
+        resampler = nil; configuredInputRate = 0; configuredProfile = nil; phase = 0
     }
 
-    private mutating func configure(rate: Double) {
-        if resampler == nil || configuredInputRate != rate {
-            resampler = TVComplexResampler(inputRate: rate, outputRate: outputRate, radius: radius)
+    /// The full profile keeps the kernel this instance was built with; a reduced
+    /// profile supplies its own, deliberately conservative, radius: the
+    /// companion still needs a real anti-alias filter before decimation.
+    private func extractionRadius(_ profile: TVChainProfile) -> Int {
+        profile == .full ? radius : profile.soundExtractionRadius
+    }
+
+    private mutating func configure(rate: Double, profile: TVChainProfile) {
+        if resampler == nil || configuredInputRate != rate || configuredProfile != profile {
+            resampler = TVComplexResampler(inputRate: rate, outputRate: outputRate,
+                                           radius: extractionRadius(profile),
+                                           singlePrecisionAccumulation: profile.soundResamplerSinglePrecision)
             configuredInputRate = rate
+            configuredProfile = profile
             phase = 0
         }
     }
@@ -86,13 +97,14 @@ public struct TVSoundExtractor: Sendable {
     /// front-end IQ; the caller composes the RF spacing with the front end's
     /// tuning shift. `firstSampleIndex` is the absolute channel index of `i[0]`.
     public mutating func extract(i: [Float], q: [Float], frameIndex: Int64,
-                                 firstSampleIndex: Int64, sampleRate: Double, shiftHz: Double) -> TVSoundIQ {
-        configure(rate: sampleRate)
+                                 firstSampleIndex: Int64, sampleRate: Double, shiftHz: Double,
+                                 profile: TVChainProfile = .full) -> TVSoundIQ {
+        configure(rate: sampleRate, profile: profile)
         let count = i.count
         var shiftedI = [Float](repeating: 0,count: count)
         var shiftedQ = shiftedI
         let step = -2*Double.pi*shiftHz/sampleRate
-        let workers = min(12,max(1,count/65_536))
+        let workers = cappedWorkers(min(12,max(1,count/65_536)))
         i.withUnsafeBufferPointer { ip in
             q.withUnsafeBufferPointer { qp in
                 shiftedI.withUnsafeMutableBufferPointer { op in
@@ -118,13 +130,14 @@ public struct TVSoundExtractor: Sendable {
     /// detuning the sound.
     public mutating func extractIntercarrier(_ video: [Float], frameIndex: Int64,
                                              firstSampleIndex: Int64, sampleRate: Double,
-                                             carrierHz: Double) -> TVSoundIQ {
-        configure(rate: sampleRate)
+                                             carrierHz: Double,
+                                             profile: TVChainProfile = .full) -> TVSoundIQ {
+        configure(rate: sampleRate, profile: profile)
         let count = video.count
         var mixedI = [Float](repeating: 0,count: count)
         var mixedQ = mixedI
         let step = -2*Double.pi*carrierHz/sampleRate
-        let workers = min(12,max(1,count/65_536))
+        let workers = cappedWorkers(min(12,max(1,count/65_536)))
         video.withUnsafeBufferPointer { vp in
             mixedI.withUnsafeMutableBufferPointer { op in
                 mixedQ.withUnsafeMutableBufferPointer { oq in

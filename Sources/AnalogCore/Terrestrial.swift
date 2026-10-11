@@ -34,12 +34,15 @@ public struct TerrestrialSettings: Codable, Equatable, Sendable {
     public var decoder = TVDecoderSettings()
     /// Shared receiver front-end gain and nonlinearity.
     public var frontEnd = TVFrontEndSettings()
+    /// Cost/quality profile of the vision + companion chain. Defaults to the
+    /// reference configuration, so existing callers and sessions are unchanged.
+    public var performance = TVChainProfile.full
     public init() {}
     public init(system: TerrestrialSystem) { rfBandwidthMHz = system.channelMHz }
     public enum CodingKeys: String, CodingKey {
         case execution, signalDB, carrierToNoiseDB, rfBandwidthMHz, echoGain, echoDelayMicroseconds
         case echoPhaseDegrees, tuningOffsetKHz, automaticFineTuning, automaticGain, manualGainDB, seed
-        case propagation, transmitter, receiverDamage, decoder, frontEnd
+        case propagation, transmitter, receiverDamage, decoder, frontEnd, performance
     }
     /// Missing keys fall back to their defaults so a session written before a
     /// field existed still decodes. Every new field must be added here with
@@ -63,10 +66,11 @@ public struct TerrestrialSettings: Codable, Equatable, Sendable {
         receiverDamage = try container.decodeIfPresent(TVReceiverDamageSettings.self,forKey: .receiverDamage) ?? TVReceiverDamageSettings()
         self.decoder = try container.decodeIfPresent(TVDecoderSettings.self,forKey: .decoder) ?? TVDecoderSettings()
         frontEnd = try container.decodeIfPresent(TVFrontEndSettings.self,forKey: .frontEnd) ?? TVFrontEndSettings()
+        performance = try container.decodeIfPresent(TVChainProfile.self,forKey: .performance) ?? .full
     }
     public func validate(rate: Double) throws {
         try propagation.validate(); try transmitter.validate(); try receiverDamage.validate(); try decoder.validate()
-        try frontEnd.validate()
+        try frontEnd.validate(); try performance.validate()
         let values = [signalDB, carrierToNoiseDB, rfBandwidthMHz, echoGain,
                       echoDelayMicroseconds, echoPhaseDegrees, tuningOffsetKHz, manualGainDB]
         guard values.allSatisfy(\.isFinite), (-80...20).contains(signalDB),
@@ -103,6 +107,10 @@ public struct TelevisionSynchronization: Equatable, Sendable {
 }
 public struct TerrestrialTimings: Sendable {
     public var modulation: Double = 0
+    /// Included in modulation; companion resampling/combination and load delivery.
+    public var channelCombination: Double = 0
+    /// Companion mixing and resampling, excluding FM demodulation.
+    public var soundExtraction: Double = 0
     public var channel: Double = 0
     public var tuner: Double = 0
     public var carrier: Double = 0
@@ -154,7 +162,7 @@ struct TelevisionFIR: Sendable {
             reversed.withUnsafeBufferPointer { k in
                 output.withUnsafeMutableBufferPointer { y in
                     let convolution = TelevisionConvolution(input: x,kernel: k,output: y)
-                    let workers = min(chunks,max(1,input.count/131_072))
+                    let workers = cappedWorkers(min(chunks,max(1,input.count/131_072)))
                     if workers > 1 {
                         DispatchQueue.concurrentPerform(iterations: workers) { worker in
                             convolution.run(worker*input.count/workers..<(worker+1)*input.count/workers)
@@ -240,13 +248,75 @@ private struct TelevisionConvolution: @unchecked Sendable {
 }
 
 /// Each item has exactly one worker. Immutable input may be shared; its private
-/// filter/history/output are read by the owner only after concurrentPerform returns.
+/// filter/history/output are read by the owner only after the work returns.
 private final class TelevisionFilterWork: @unchecked Sendable {
     var filter: TelevisionFIR
     let input: [Float]
     var output = [Float]()
     init(filter: TelevisionFIR, input: [Float]) { self.filter = filter; self.input = input }
     func run(chunks: Int = 1) { output = filter.process(input,chunks: chunks) }
+}
+
+/// One decimated FIR evaluation over an immutable input. The owning filter keeps
+/// its full-rate causal history, so this can alternate with a full-rate pass.
+private final class TVDecimationWork: @unchecked Sendable {
+    var filter: TelevisionFIR
+    let input: [Float]
+    let factor: Int, phase: Int
+    var output = [Float]()
+    init(_ filter: TelevisionFIR, _ input: [Float], _ factor: Int, _ phase: Int) {
+        self.filter = filter; self.input = input; self.factor = factor; self.phase = phase
+    }
+    func run() { output = filter.decimate(input,factor: factor,phase: phase) }
+}
+
+/// One contiguous range of channel noise, generated and transformed in place.
+/// The stream is addressed by absolute sample index, so any partition of the
+/// frame produces the same samples and the workers write disjoint elements.
+private struct TVNoiseBlock: @unchecked Sendable {
+    let radius: UnsafeMutableBufferPointer<Float>
+    let angle: UnsafeMutableBufferPointer<Float>
+    let cosine: UnsafeMutableBufferPointer<Float>
+    let sine: UnsafeMutableBufferPointer<Float>
+    let seed: UInt64
+    func run(_ range: Range<Int>) {
+        guard !range.isEmpty else { return }
+        let r = radius.baseAddress!, a = angle.baseAddress!
+        let cosines = cosine.baseAddress!, sines = sine.baseAddress!
+        for n in range {
+            let index = UInt64(n)
+            r[n] = max(1e-7,TerrestrialRFChannel.uniformValue(seed &+ index &* 0x9e3779b97f4a7c15))
+            a[n] = 2 * .pi * TerrestrialRFChannel.uniformValue(seed &+ index &* 0xd1b54a32d192ed03)
+        }
+        var length = Int32(range.count)
+        let base = range.lowerBound
+        // Rayleigh radius sqrt(-2 ln u), then the unit vector from the angle.
+        vvlogf(r+base,r+base,&length)
+        var scale: Float = -2
+        vDSP_vsmul(r+base,1,&scale,r+base,1,vDSP_Length(length))
+        vvsqrtf(r+base,r+base,&length)
+        vvsincosf(sines+base,cosines+base,a+base,&length)
+    }
+}
+
+/// One disjoint output range of the carrier detector: the oscillator's sin/cos
+/// for that range's phases, then the coherent product, reusing the cosine buffer
+/// as the output exactly as the serial path does. Both steps are elementwise, so
+/// any partition produces the same samples bit for bit.
+private struct TVCarrierDetect: @unchecked Sendable {
+    let re: UnsafeBufferPointer<Float>, im: UnsafeBufferPointer<Float>
+    let phases: UnsafeBufferPointer<Float>
+    let cosine: UnsafeMutableBufferPointer<Float>
+    let sine: UnsafeMutableBufferPointer<Float>
+    func run(_ range: Range<Int>) {
+        guard !range.isEmpty else { return }
+        var length = Int32(range.count)
+        let base = range.lowerBound
+        let c = cosine.baseAddress!, s = sine.baseAddress!, p = phases.baseAddress!
+        vvsincosf(s+base,c+base,p+base,&length)
+        let r = re.baseAddress!, i = im.baseAddress!
+        for n in range { c[n] = r[n]*c[n]+i[n]*s[n] }
+    }
 }
 
 /// Immutable array storage may be shared; each task writes only its own result.
@@ -347,7 +417,7 @@ public struct TerrestrialRFChannel: Sendable {
         rng &+= 0x9e3779b97f4a7c15
         return Self.uniformValue(rng)
     }
-    @inline(__always) private static func uniformValue(_ state: UInt64) -> Float {
+    @inline(__always) fileprivate static func uniformValue(_ state: UInt64) -> Float {
         var z = state; z = (z ^ (z >> 30)) &* 0xbf58476d1ce4e5b9
         z = (z ^ (z >> 27)) &* 0x94d049bb133111eb
         return Float((z ^ (z >> 31)) >> 40) / Float(1 << 24)
@@ -387,38 +457,62 @@ public struct TerrestrialRFChannel: Sendable {
                 im[n] = gain * (q[n] + settings.echoGain*(a*sp+b*cp)) + radius*sin(angle)
             }
         } else {
-            // Preserve the exact PRNG sequence across frames; vectorize only the
-            // independent Box-Muller transforms, so speed does not alter the noise model.
             var radii = [Float](repeating: 0,count: re.count), angles = radii
             let seed = rng, sampleCount = re.count
-            rng = radii.withUnsafeMutableBufferPointer { r in
-                angles.withUnsafeMutableBufferPointer { a in
-                    var state = seed
-                    let radius = r.baseAddress!, angle = a.baseAddress!
-                    for n in 0..<sampleCount {
-                        state &+= 0x9e3779b97f4a7c15
-                        radius[n] = max(1e-7,Self.uniformValue(state))
-                        state &+= 0x9e3779b97f4a7c15
-                        angle[n] = 2 * .pi * Self.uniformValue(state)
+            if settings.performance.noiseGenerator == .parallelBoxMuller {
+                // Independent streams over disjoint ranges, evaluated concurrently.
+                // The stream is addressed by absolute sample index, so the result
+                // does not depend on the worker count, and it is still Box-Muller:
+                // the noise power, the whiteness and the distribution are exactly
+                // the same as the serial generator, only the realization differs.
+                let workers = cappedWorkers(min(8,max(1,sampleCount/65_536)))
+                radii.withUnsafeMutableBufferPointer { r in
+                    angles.withUnsafeMutableBufferPointer { a in
+                        re.withUnsafeMutableBufferPointer { cosine in
+                            im.withUnsafeMutableBufferPointer { sine in
+                                let work = TVNoiseBlock(radius: r,angle: a,cosine: cosine,sine: sine,seed: seed)
+                                if workers > 1 {
+                                    DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                                        work.run(worker*sampleCount/workers..<(worker+1)*sampleCount/workers)
+                                    }
+                                } else { work.run(0..<sampleCount) }
+                            }
+                        }
                     }
-                    return state
                 }
-            }
-            var length = Int32(re.count)
-            radii.withUnsafeBufferPointer { u in
-                re.withUnsafeMutableBufferPointer { r in vvlogf(r.baseAddress!,u.baseAddress!,&length) }
-            }
-            re.withUnsafeMutableBufferPointer { p in
-                var scale: Float = -2
-                vDSP_vsmul(p.baseAddress!,1,&scale,p.baseAddress!,1,vDSP_Length(sampleCount))
-            }
-            re.withUnsafeBufferPointer { logarithms in
-                radii.withUnsafeMutableBufferPointer { r in vvsqrtf(r.baseAddress!,logarithms.baseAddress!,&length) }
-            }
-            angles.withUnsafeBufferPointer { angle in
-                re.withUnsafeMutableBufferPointer { cosine in
-                    im.withUnsafeMutableBufferPointer { sine in
-                        vvsincosf(sine.baseAddress!,cosine.baseAddress!,angle.baseAddress!,&length)
+                rng = seed &+ (UInt64(sampleCount) &* 2) &* 0x9e3779b97f4a7c15
+            } else {
+                // Preserve the exact PRNG sequence across frames; vectorize only the
+                // independent Box-Muller transforms, so speed does not alter the noise model.
+                rng = radii.withUnsafeMutableBufferPointer { r in
+                    angles.withUnsafeMutableBufferPointer { a in
+                        var state = seed
+                        let radius = r.baseAddress!, angle = a.baseAddress!
+                        for n in 0..<sampleCount {
+                            state &+= 0x9e3779b97f4a7c15
+                            radius[n] = max(1e-7,Self.uniformValue(state))
+                            state &+= 0x9e3779b97f4a7c15
+                            angle[n] = 2 * .pi * Self.uniformValue(state)
+                        }
+                        return state
+                    }
+                }
+                var length = Int32(sampleCount)
+                radii.withUnsafeBufferPointer { u in
+                    re.withUnsafeMutableBufferPointer { r in vvlogf(r.baseAddress!,u.baseAddress!,&length) }
+                }
+                re.withUnsafeMutableBufferPointer { p in
+                    var scale: Float = -2
+                    vDSP_vsmul(p.baseAddress!,1,&scale,p.baseAddress!,1,vDSP_Length(sampleCount))
+                }
+                re.withUnsafeBufferPointer { logarithms in
+                    radii.withUnsafeMutableBufferPointer { r in vvsqrtf(r.baseAddress!,logarithms.baseAddress!,&length) }
+                }
+                angles.withUnsafeBufferPointer { angle in
+                    re.withUnsafeMutableBufferPointer { cosine in
+                        im.withUnsafeMutableBufferPointer { sine in
+                            vvsincosf(sine.baseAddress!,cosine.baseAddress!,angle.baseAddress!,&length)
+                        }
                     }
                 }
             }
@@ -497,6 +591,15 @@ public struct TerrestrialReceiver: Sendable {
     private var videoLowpassRate: Double = 0
     private var carrierPhase = 0.0
     private(set) var carrierFrequency = 0.0
+    /// True while the previous frame captured the vision carrier comfortably
+    /// inside the AFC capture range. Drives the reduced-rate carrier estimate.
+    private var carrierTracked = false
+    /// Carrier-estimation decimation actually used by the last frame. Diagnostics
+    /// only: 1 means the full-rate estimate ran.
+    private(set) var carrierEstimationDecimation = 1
+    /// Phase-error feedback stride the carrier PLL actually used on the last
+    /// frame. Diagnostics only: 1 means the dense per-sample feedback ran.
+    private(set) var carrierPLLStrideUsed = 1
     private var gain: Float = 1
     private var gainAcquired = false
     private var gainDynamics = TVAGCDynamics()
@@ -554,13 +657,46 @@ public struct TerrestrialReceiver: Sendable {
         return (try detect(front, settings: settings, started: started), front)
     }
 
+    /// Phase of the complex front-end signal at every `stride`-th sample, which
+    /// is the grid the carrier PLL measures its phase error on. At stride 1 this
+    /// is exactly the original full-rate vector phase.
+    private static func sampledPhases(i: [Float], q: [Float], stride: Int) -> [Float] {
+        let count = (i.count+stride-1)/stride
+        var phases = [Float](repeating: 0,count: count)
+        guard count > 0 else { return phases }
+        var length = Int32(count)
+        if stride == 1 {
+            i.withUnsafeBufferPointer { x in q.withUnsafeBufferPointer { y in
+                phases.withUnsafeMutableBufferPointer { p in
+                    vvatan2f(p.baseAddress!,y.baseAddress!,x.baseAddress!,&length)
+                }
+            } }
+            return phases
+        }
+        var real = [Float](repeating: 0,count: count), imaginary = real
+        i.withUnsafeBufferPointer { x in real.withUnsafeMutableBufferPointer { r in
+            let source = x.baseAddress!, target = r.baseAddress!
+            for j in 0..<count { target[j] = source[j*stride] }
+        } }
+        q.withUnsafeBufferPointer { y in imaginary.withUnsafeMutableBufferPointer { m in
+            let source = y.baseAddress!, target = m.baseAddress!
+            for j in 0..<count { target[j] = source[j*stride] }
+        } }
+        real.withUnsafeBufferPointer { r in imaginary.withUnsafeBufferPointer { m in
+            phases.withUnsafeMutableBufferPointer { p in
+                vvatan2f(p.baseAddress!,m.baseAddress!,r.baseAddress!,&length)
+            }
+        } }
+        return phases
+    }
+
     /// Detection-only half of the receiver, after the shared front end. The input
     /// is already tuned and IF-filtered; the spectrum is the pre-tuner RF tap.
     mutating func detect(
         _ front: TVFrontEndOutput, settings: TerrestrialSettings, started: ContinuousClock.Instant
     ) throws -> TerrestrialReception {
         let s = system.video, rate = front.sampleRate, count = front.i.count
-        var re = front.i, im = front.q
+        let re = front.i, im = front.q
         let spectrum = front.spectrum
         let frameIndex = front.frameIndex
         let tuned = ContinuousClock.now
@@ -578,28 +714,49 @@ public struct TerrestrialReceiver: Sendable {
             carrierFilterI = TelevisionFIR(k); carrierFilterQ = TelevisionFIR(k)
             carrierFilterRate = rate
         }
-        let carrierFiltered = TelevisionFIR.together([carrierFilterI!,carrierFilterQ!],
+        // While the carrier is already tracked, the profile may evaluate the
+        // carrier estimate on a decimated grid instead of every RF sample.
+        // Acquisition, loss of lock and drift towards the capture edge all use
+        // the full-rate estimate.
+        let afcDecimation = carrierTracked
+            ? max(1,min(settings.performance.afcLockedDecimation,max(1,count/4))) : 1
+        carrierEstimationDecimation = afcDecimation
+        let carrierFiltered: ([TelevisionFIR], [[Float]])
+        if afcDecimation > 1 {
+            // The carrier filter is applied at the original rate and read every
+            // `afcDecimation`-th output. The filter itself is the anti-alias
+            // filter: its 250 kHz passband sits far below the decimated Nyquist,
+            // so this is the same narrowband estimate from fewer points, and the
+            // causal history still advances over every input sample.
+            let work = [TVDecimationWork(carrierFilterI!,re,afcDecimation,0),
+                        TVDecimationWork(carrierFilterQ!,im,afcDecimation,0)]
+            if settings.execution == .accelerated {
+                DispatchQueue.concurrentPerform(iterations: 2) { work[$0].run() }
+            } else { for item in work { item.run() } }
+            carrierFiltered = ([work[0].filter,work[1].filter],[work[0].output,work[1].output])
+        } else {
+            carrierFiltered = TelevisionFIR.together([carrierFilterI!,carrierFilterQ!],
                                                      inputs: [re,im],execution: settings.execution)
+        }
         carrierFilterI = carrierFiltered.0[0]; carrierFilterQ = carrierFiltered.0[1]
         let carrierI = carrierFiltered.1[0], carrierQ = carrierFiltered.1[1]
+        let carrierCount = carrierI.count
+        let carrierRate = rate/Double(afcDecimation)
+        let carrierStart = min(max(1,acquisitionStart/afcDecimation),max(0,carrierCount/4))
         let vectorAngles = settings.execution == .accelerated
-        var angles = [Float](repeating: 0,count: vectorAngles ? count : 0)
-        if vectorAngles {
-            var length = Int32(count)
-            re.withUnsafeBufferPointer { x in
-                im.withUnsafeBufferPointer { y in
-                    angles.withUnsafeMutableBufferPointer { p in
-                        vvatan2f(p.baseAddress!,y.baseAddress!,x.baseAddress!,&length)
-                    }
-                }
-            }
-        }
+        // The PLL measures its phase error on the same reduced grid when the
+        // profile asks for it; the oscillator itself still advances per sample.
+        // Acquisition and loss of lock always use the dense per-sample feedback.
+        let pllStride = vectorAngles
+            ? max(1,min(carrierTracked ? settings.performance.carrierPLLStride : 1,count)) : 1
+        carrierPLLStrideUsed = pllStride
+        let angles = vectorAngles ? Self.sampledPhases(i: re,q: im,stride: pllStride) : []
         var winding = 0.0, totalPower = 0.0
         if vectorAngles {
             // Adjacent measured phase differences and powers are independent.
             // Each worker owns its accumulator; carrier PLL feedback stays serial.
-            var carrierAngles = [Float](repeating: 0,count: count)
-            var carrierLength = Int32(count)
+            var carrierAngles = [Float](repeating: 0,count: carrierCount)
+            var carrierLength = Int32(carrierCount)
             carrierI.withUnsafeBufferPointer { x in
                 carrierQ.withUnsafeBufferPointer { y in
                     carrierAngles.withUnsafeMutableBufferPointer { p in
@@ -607,16 +764,17 @@ public struct TerrestrialReceiver: Sendable {
                     }
                 }
             }
-            let workers = min(8,max(1,(count-acquisitionStart)/65_536))
+            let span = carrierCount-carrierStart-1
+            let workers = cappedWorkers(min(8,max(1,span/65_536)))
             let work = (0..<workers).map { worker in
                 TVCarrierScan(i: carrierI,q: carrierQ,angles: carrierAngles,
-                    range: acquisitionStart+1+worker*(count-acquisitionStart-1)/workers ..< acquisitionStart+1+(worker+1)*(count-acquisitionStart-1)/workers)
+                    range: carrierStart+1+worker*span/workers ..< carrierStart+1+(worker+1)*span/workers)
             }
             DispatchQueue.concurrentPerform(iterations: workers) { work[$0].run() }
             for item in work { winding += item.result.x; totalPower += item.result.y }
         } else {
-            var previous = atan2(Double(carrierQ[acquisitionStart]),Double(carrierI[acquisitionStart]))
-            for n in acquisitionStart+1..<count {
+            var previous = atan2(Double(carrierQ[carrierStart]),Double(carrierI[carrierStart]))
+            for n in carrierStart+1..<carrierCount {
                 let p = atan2(Double(carrierQ[n]),Double(carrierI[n]))
                 var d = p-previous
                 if d > .pi { d -= 2 * .pi }; if d < -.pi { d += 2 * .pi }
@@ -624,9 +782,13 @@ public struct TerrestrialReceiver: Sendable {
                 totalPower += Double(carrierI[n]*carrierI[n]+carrierQ[n]*carrierQ[n])
             }
         }
-        let measured = winding * rate / (2 * .pi * Double(max(1,count-acquisitionStart-1)))
-        let carrierPresent = totalPower / Double(count) > 1e-10
+        let measured = winding * carrierRate / (2 * .pi * Double(max(1,carrierCount-carrierStart-1)))
+        let carrierPresent = totalPower / Double(carrierCount) > 1e-10
         let captured = carrierPresent && abs(measured) < 150_000
+        // Only track the reduced-rate estimate while the carrier sits comfortably
+        // inside the capture range; acquisition and any drift towards the edge
+        // fall back to the full-rate estimate on the next frame.
+        carrierTracked = captured && abs(measured) < 100_000
         carrierFrequency = settings.automaticFineTuning && captured ? measured : 0
         let estimated = ContinuousClock.now
         let omega = 2 * Double.pi * carrierFrequency / rate
@@ -637,30 +799,38 @@ public struct TerrestrialReceiver: Sendable {
         var oscillatorI = cos(carrierPhase), oscillatorQ = sin(carrierPhase)
         let frequencyI = cos(omega), frequencyQ = sin(omega)
         if settings.execution == .accelerated {
-            // atan2(z * exp(-j theta)) == wrap(arg(z) - theta). Input phase is
-            // already available from vector AFC. Keep the exact per-sample PLL
-            // feedback, then batch oscillator sin/cos and coherent detection.
-            // This avoids a divide/polynomial and two serial complex rotations
-            // per RF sample; the loop bandwidth and phase-error limiter are unchanged.
+            // atan2(z * exp(-j theta)) == wrap(arg(z) - theta). Input phase at
+            // the loop's update points is precomputed above. Keep the phase-error
+            // feedback and the phase-error limiter, then batch oscillator
+            // sin/cos and coherent detection. This avoids a divide/polynomial
+            // and two serial complex rotations per RF sample. `pllStride` only
+            // changes how many measured errors per frame the loop consumes; the
+            // oscillator still advances by omega plus the held correction on
+            // every sample, so the loop bandwidth is unchanged.
             var phases = [Float](repeating: 0,count: count)
             let initialPhase = carrierPhase
             let phaseState = re.withUnsafeBufferPointer { rp in
                 im.withUnsafeBufferPointer { ip in
                     angles.withUnsafeBufferPointer { ap in
                         phases.withUnsafeMutableBufferPointer { pp in
-                            var theta = initialPhase, correctionSum = 0.0
+                            var theta = initialPhase, correctionSum = 0.0, correction = 0.0
+                            var nextUpdate = 0, update = 0
                             let r = rp.baseAddress!, i = ip.baseAddress!, a = ap.baseAddress!, p = pp.baseAddress!
                             for n in 0..<count {
                                 p[n] = Float(theta)
-                                var error = Double(a[n])-theta
-                                if error > .pi { error -= 2 * .pi }
-                                if error < -.pi { error += 2 * .pi }
-                                error = r[n] == 0 && i[n] == 0 ? 0 : max(-0.2,min(0.2,error))
-                                let correction = loopGain*error
+                                if n == nextUpdate {
+                                    var error = Double(a[update])-theta
+                                    if error > .pi { error -= 2 * .pi }
+                                    if error < -.pi { error += 2 * .pi }
+                                    error = r[n] == 0 && i[n] == 0 ? 0 : max(-0.2,min(0.2,error))
+                                    correction = loopGain*error
+                                    if n > acquisitionStart { correctionSum += correction*Double(pllStride) }
+                                    nextUpdate = n+pllStride
+                                    update += 1
+                                }
                                 theta += omega+correction
                                 if theta > .pi { theta -= 2 * .pi }
                                 if theta < -.pi { theta += 2 * .pi }
-                                if n > acquisitionStart { correctionSum += correction }
                             }
                             return (theta,correctionSum)
                         }
@@ -669,20 +839,45 @@ public struct TerrestrialReceiver: Sendable {
             }
             pllCorrection = phaseState.1
             var sine = [Float](repeating: 0,count: count)
-            var length = Int32(count)
-            phases.withUnsafeBufferPointer { p in
-                demod.withUnsafeMutableBufferPointer { cosine in
-                    sine.withUnsafeMutableBufferPointer { q in
-                        vvsincosf(q.baseAddress!,cosine.baseAddress!,p.baseAddress!,&length)
+            if settings.performance != .full {
+                // Oscillator synthesis and coherent detection are elementwise, so
+                // splitting the frame across workers cannot change one output
+                // sample. This is the largest remaining piece of the carrier
+                // stage once the feedback stride has been reduced.
+                let workers = cappedWorkers(min(8,max(1,count/65_536)))
+                phases.withUnsafeBufferPointer { p in
+                    re.withUnsafeBufferPointer { rp in
+                        im.withUnsafeBufferPointer { ip in
+                            demod.withUnsafeMutableBufferPointer { cosine in
+                                sine.withUnsafeMutableBufferPointer { sn in
+                                    let work = TVCarrierDetect(re: rp,im: ip,phases: p,
+                                                               cosine: cosine,sine: sn)
+                                    if workers > 1 {
+                                        DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                                            work.run(worker*count/workers..<(worker+1)*count/workers)
+                                        }
+                                    } else { work.run(0..<count) }
+                                }
+                            }
+                        }
                     }
                 }
-            }
-            re.withUnsafeBufferPointer { rp in
-                im.withUnsafeBufferPointer { ip in
-                    sine.withUnsafeBufferPointer { sp in
-                        demod.withUnsafeMutableBufferPointer { output in
-                            let r = rp.baseAddress!, i = ip.baseAddress!, q = sp.baseAddress!, target = output.baseAddress!
-                            for n in 0..<count { target[n] = r[n]*target[n]+i[n]*q[n] }
+            } else {
+                var length = Int32(count)
+                phases.withUnsafeBufferPointer { p in
+                    demod.withUnsafeMutableBufferPointer { cosine in
+                        sine.withUnsafeMutableBufferPointer { q in
+                            vvsincosf(q.baseAddress!,cosine.baseAddress!,p.baseAddress!,&length)
+                        }
+                    }
+                }
+                re.withUnsafeBufferPointer { rp in
+                    im.withUnsafeBufferPointer { ip in
+                        sine.withUnsafeBufferPointer { sp in
+                            demod.withUnsafeMutableBufferPointer { output in
+                                let r = rp.baseAddress!, i = ip.baseAddress!, q = sp.baseAddress!, target = output.baseAddress!
+                                for n in 0..<count { target[n] = r[n]*target[n]+i[n]*q[n] }
+                            }
                         }
                     }
                 }
@@ -922,21 +1117,23 @@ public struct TerrestrialEngine: Sendable {
         var visionPower: [Float] = []
         if audio != nil, settings.transmitter.enabled, settings.transmitter.sharedCoupling > 0 {
             let cells = TVSoundClock.count(frame: input.frameIndex,standard: input.standard,rate: TerrestrialSoundEngine.rate)
+            let step = max(1,settings.performance.amplifierCouplingStride)
             visionPower = rf.i.withUnsafeBufferPointer { ip in rf.q.withUnsafeBufferPointer { qp in
                 [Float](unsafeUninitializedCapacity: cells) { output,initialized in
                     let i = ip.baseAddress!, q = qp.baseAddress!, target = output.baseAddress!, count = ip.count
                     for cell in 0..<cells {
                         let a = cell*count/cells, b = (cell+1)*count/cells
-                        var sum: Float = 0
-                        for n in a..<b { sum += i[n]*i[n]+q[n]*q[n] }
-                        target.advanced(by: cell).initialize(to: sum/Float(max(1,b-a)))
+                        var sum: Float = 0, samples = 0
+                        for n in stride(from: a,to: b,by: step) { sum += i[n]*i[n]+q[n]*q[n]; samples += 1 }
+                        target.advanced(by: cell).initialize(to: sum/Float(max(1,samples)))
                     }
                     initialized = cells
                 }
             } }
         }
         (rf.i,rf.q) = amplifier.apply(i: rf.i,q: rf.q,settings: settings.transmitter,execution: settings.execution,
-            otherPower: visionPower.isEmpty ? [] : [0.1*settings.transmitter.powerGain])
+            otherPower: visionPower.isEmpty ? [] : [0.1*settings.transmitter.powerGain],
+            profile: settings.performance)
         let forward = amplifier.meanOutputPower
         TVTransmitterSettings.deliver(i: &rf.i,q: &rf.q,settings: settings.transmitter)
         let modulated = ContinuousClock.now

@@ -917,7 +917,9 @@ struct ContentView: View {
                 .disabled(model.busy)
             }
             .padding(20)
-            .background(Color.black)
+            .padding(.top, 10)
+            .background(Color.black.ignoresSafeArea(.container, edges: .top))
+            .modifier(WorkspaceHeaderDrag())
             .padding(.horizontal, -20)
             .padding(.top, -20)
             if model.tvPreparing { TVPreparationBar(model: model) }
@@ -998,7 +1000,10 @@ struct ContentView: View {
                 }
             }
             }
-        }.id(languageStore.language).padding(20).frame(minWidth: 1000,minHeight: 760).preferredColorScheme(.dark)
+        }.id(languageStore.language).padding(20).frame(minWidth: 1000,minHeight: 760)
+            .ignoresSafeArea(.container, edges: .top)
+            .background { WorkspaceGlassBackground().ignoresSafeArea() }
+            .preferredColorScheme(.dark)
             .focusedSceneObject(model)
             .onOpenURL { model.openSession($0) }
             .navigationTitle(model.sessionURL?.lastPathComponent ?? L("AnaLine"))
@@ -1015,6 +1020,7 @@ struct AnaLineApp: App {
     @StateObject private var languageStore = LanguageStore()
     var body: some Scene {
         WindowGroup(L("AnaLine")) { ContentView(languageStore: languageStore) }.defaultSize(width: 1200,height: 900)
+            .windowStyle(.hiddenTitleBar)
             .commands { AnaLineAboutCommands(); TVSessionCommands() }
         Window(L("About Ana-Line"), id: "about") {
             AnaLineAboutView()

@@ -58,7 +58,8 @@ public struct TerrestrialSoundEngine: Sendable {
         let rfStart = TVSoundClock.offset(frame: frameIndex,standard: system.video,rate: Self.rate)
         let signal = modulator.modulate(pcm,frameIndex: frameIndex,settings: settings,rate: rate)
         var i = signal.i, q = signal.q
-        (i,q) = amplifier.apply(i: i,q: q,settings: settings.transmitter,execution: settings.execution,otherPower: visionPower)
+        (i,q) = amplifier.apply(i: i,q: q,settings: settings.transmitter,execution: settings.execution,
+                                otherPower: visionPower,profile: settings.performance)
         var meter = TVTransmitterTelemetry()
         meter.forwardPower = amplifier.meanOutputPower
         meter.reflectedPower = meter.forwardPower*settings.transmitter.reflectedFraction
@@ -68,7 +69,8 @@ public struct TerrestrialSoundEngine: Sendable {
         (i,q) = channel.transmit(i: i,q: q,rate: rate,carrierOffsetHz: system.soundCarrierHz,
                                 noiseReferenceRate: system.video.sampleRate,time: Double(rfStart)/rate,settings: settings)
         // Fixed RF coordinates, after propagation but before the tuner / IF.
-        let spectrum = spectrumAnalyzer.analyze(i: i,q: q,rate: rate,centerHz: system.soundCarrierHz)
+        let spectrum = spectrumAnalyzer.analyze(i: i,q: q,rate: rate,centerHz: system.soundCarrierHz,
+                                                windows: settings.performance.spectrumWindows)
         let recovered = demodulator.demodulate(
             TVSoundIQ(system: system,frameIndex: frameIndex,sampleRate: rate,i: i,q: q),
             settings: settings,visionCorrectionHz: visionCorrectionHz,receiverGain: receiverGain)

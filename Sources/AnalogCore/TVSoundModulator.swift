@@ -69,14 +69,40 @@ public struct TVSoundModulator: Sendable {
         }
         var angles = [Float](repeating: 0,count: count)
         let modulationStep = 2 * Double.pi * system.soundDeviationHz/rate
-        for n in angles.indices {
-            let position = (Double(rfStart)+Double(n))/ratio-Double(pcmStart)
-            let j = Int(floor(position)), fraction = Float(position-Double(j))
-            let a = j <= 0 ? previousEmphasized : emphasized[min(j-1,emphasized.count-1)]
-            let b = j < 0 ? previousEmphasized : emphasized[min(j,emphasized.count-1)]
-            phase += modulationStep * Double(a+(b-a)*fraction)
-            angles[n] = Float(phase)
-            if n & 1023 == 0 { phase = phase.remainder(dividingBy: 2 * .pi) }
+        // The RF/PCM rate ratio is 8 in the unified channel, so the interpolation
+        // schedule is an exact integer grid. Walking it with integer state gives
+        // the same sample positions and weights as the floating-point schedule
+        // (dividing by a power of two is exact) without a per-sample floor and
+        // index conversion. Any other ratio keeps the floating-point schedule.
+        let rateRatio = Int(ratio)
+        let last = emphasized.count-1
+        if settings.performance.soundSynthesisIntegerSchedule, ratio.rounded() == ratio, ratio >= 1,
+           rateRatio <= 4096 {
+            let base = rfStart-Int64(rateRatio)*pcmStart
+            let baseIndex = base >= 0 ? base/Int64(rateRatio)
+                : -((-base+Int64(rateRatio)-1)/Int64(rateRatio))
+            var index = Int(baseIndex), remainder = Int(base-baseIndex*Int64(rateRatio))
+            let step = Float(rateRatio)
+            for n in angles.indices {
+                let fraction = Float(remainder)/step
+                let a = index <= 0 ? previousEmphasized : emphasized[min(index-1,last)]
+                let b = index < 0 ? previousEmphasized : emphasized[min(index,last)]
+                phase += modulationStep * Double(a+(b-a)*fraction)
+                angles[n] = Float(phase)
+                if n & 1023 == 0 { phase = phase.remainder(dividingBy: 2 * .pi) }
+                remainder += 1
+                if remainder == rateRatio { remainder = 0; index += 1 }
+            }
+        } else {
+            for n in angles.indices {
+                let position = (Double(rfStart)+Double(n))/ratio-Double(pcmStart)
+                let j = Int(floor(position)), fraction = Float(position-Double(j))
+                let a = j <= 0 ? previousEmphasized : emphasized[min(j-1,last)]
+                let b = j < 0 ? previousEmphasized : emphasized[min(j,last)]
+                phase += modulationStep * Double(a+(b-a)*fraction)
+                angles[n] = Float(phase)
+                if n & 1023 == 0 { phase = phase.remainder(dividingBy: 2 * .pi) }
+            }
         }
         previousEmphasized = emphasized.last ?? previousEmphasized
         var i = angles, q = angles
