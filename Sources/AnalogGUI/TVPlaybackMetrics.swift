@@ -6,6 +6,7 @@ import AnalogImaging
 /// off @Published avoids invalidating the window for every timing observation.
 struct TVPlaybackMetrics {
     private(set) var producedFrames = 0
+    private(set) var totalProductionSeconds = 0.0
     private(set) var maximumProductionSeconds = 0.0
     private(set) var maximumRenderSeconds = 0.0
     private(set) var maximumDeliveryOverheadSeconds = 0.0
@@ -20,6 +21,14 @@ struct TVPlaybackMetrics {
     private var resolvedFrame: Int64?
 
     init(firstFrame: Int64? = nil) { resolvedFrame = firstFrame.map { $0-1 } }
+
+    /// Mean wall-clock production cost per produced frame. The tail values below
+    /// say how bad the worst frame was; this says what the run cost on average,
+    /// which is what a paced 1x playback actually spends.
+    var meanProductionSeconds: Double {
+        producedFrames > 0 ? totalProductionSeconds/Double(producedFrames) : 0
+    }
+
     mutating func dropped(through frame: Int64) {
         if let resolvedFrame,frame > resolvedFrame {
             skippedFrames += frame-resolvedFrame; self.resolvedFrame = frame
@@ -28,6 +37,7 @@ struct TVPlaybackMetrics {
 
     mutating func produced(seconds: Double, frameDuration: Double, preview: TVRenderer.Preview) {
         producedFrames += 1
+        totalProductionSeconds += seconds
         if seconds > maximumProductionSeconds {
             worstFrameStages = [preview.sourceSeconds,preview.encodeSeconds,preview.decodeSeconds,preview.outputSeconds]
             let t = preview.reception.timings

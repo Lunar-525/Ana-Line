@@ -138,6 +138,7 @@ final class TVPlaybackTests: XCTestCase {
                 "media_speed":speed,"playback_rate":model.tvPlaybackRate,"underrun_samples":missing,
                 "visible_window":visibleWindow,"injected_stalls":injectStalls,
                 "produced_frames":tails.producedFrames,"presented_frames":tails.presentedFrames,
+                "mean_production_ms":tails.meanProductionSeconds*1000,
                 "maximum_production_ms":tails.maximumProductionSeconds*1000,
                 "maximum_render_ms":tails.maximumRenderSeconds*1000,
                 "maximum_delivery_overhead_ms":tails.maximumDeliveryOverheadSeconds*1000,
