@@ -96,6 +96,8 @@ final class TVPlaybackTests: XCTestCase {
         XCTAssertGreaterThan(model.tvDuration,0,model.status)
         guard model.tvDuration > 0 else { throw CocoaError(.fileReadCorruptFile) }
         var report = [[String:Any]]()
+        let requested = ProcessInfo.processInfo.environment["ANALINE_BENCHMARK_SECONDS"].flatMap(Double.init)
+        let seconds = requested ?? (visibleWindow ? 30 : injectStalls ? 10 : 5)
         for standard in TVStandard.allCases {
             model.tvStandard = standard
             try await waitUntil { !model.busy && !model.rendering }
@@ -106,7 +108,7 @@ final class TVPlaybackTests: XCTestCase {
             try await waitUntil { model.tvTime > 10.5 }
             let start = ContinuousClock.now, media = model.tvAudioMediaSeconds
             let underruns = model.tvAudioUnderrunSamples
-            try await Task.sleep(for: .seconds(visibleWindow ? 30 : injectStalls ? 10 : 5))
+            try await Task.sleep(for: .seconds(seconds))
             let elapsed = start.duration(to: .now).components
             let wall = Double(elapsed.seconds)+Double(elapsed.attoseconds)/1e18
             let speed = (model.tvAudioMediaSeconds-media)/wall
@@ -132,6 +134,7 @@ final class TVPlaybackTests: XCTestCase {
                 "Display lateness must stay below half a frame, not merely average out")
             if injectStalls { XCTAssertGreaterThan(tails.maximumProductionSeconds,0.12) }
             let row: [String:Any] = ["system":TerrestrialSystem(video: standard).rawValue,"wall_seconds":wall,
+                "requested_seconds":seconds,
                 "media_speed":speed,"playback_rate":model.tvPlaybackRate,"underrun_samples":missing,
                 "visible_window":visibleWindow,"injected_stalls":injectStalls,
                 "produced_frames":tails.producedFrames,"presented_frames":tails.presentedFrames,
@@ -171,8 +174,10 @@ final class TVPlaybackTests: XCTestCase {
                 }
             }
         }
+        let base = injectStalls ? "Terrestrial-stalled-producer-playback" : visibleWindow ? "Terrestrial-visible-window-playback" : scene ? "Terrestrial-scene-M3Max-playback" : "Terrestrial-M3Max-playback"
+        let durationSuffix = requested == nil ? "" : "-\(Int(seconds))s"
         try JSONSerialization.data(withJSONObject: report,options: [.prettyPrinted,.sortedKeys])
-            .write(to: URL(fileURLWithPath: injectStalls ? "/private/tmp/Terrestrial-stalled-producer-playback.json" : visibleWindow ? "/private/tmp/Terrestrial-visible-window-playback.json" : scene ? "/private/tmp/Terrestrial-scene-M3Max-playback.json" : "/private/tmp/Terrestrial-M3Max-playback.json"))
+            .write(to: URL(fileURLWithPath: "/private/tmp/\(base)\(durationSuffix).json"))
     }
 
     func testStandardSwitchUsesImportCachesAndPreservesPlayhead() async throws {
