@@ -145,6 +145,8 @@ RGB → CVBS → 负极性 AM / VSB → 图像与伴音功放 → 线性合成
 
 **回放行**（2026-10-13 在同一台 M3 Max 上补测）：30 s 与 180 s × 默认与损伤各跑一遍，顺序为默认 30 s → 损伤 30 s → 默认 180 s → 损伤 180 s，**其间不冷却**。四组都保持 1.0× 媒体速度、零丢帧、零音频欠载；180 s 组在 4513 / 5411 帧里各有 1～2 帧晚于自己的预算，但没有累积成掉帧或欠载。180 s 损伤组是复测——首次尝试在 PAL→NTSC 切换处 20 s 内未达到预期状态而中止（当时 PAL 为 0.976×、丢 1 帧），复测在冷却后的机器上跑完两个制式。原始数据见 [M3Max-playback-duration.json](Docs/Benchmarks/M3Max-playback-duration.json)。
 
+![M3 Max 地面电视引擎每帧最慢生成耗时（30 s / 180 s 回放）](Assets/mac-performance.png)
+
 ## iPhone 真机实测
 
 ### iPhone 14 Pro（A16）
