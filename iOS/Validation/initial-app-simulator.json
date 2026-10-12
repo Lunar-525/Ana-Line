@@ -1,0 +1,9 @@
+{
+  "checks" : [
+    "pal Full: import\/audio\/seek\/export\/frame-count\/cancel\/session",
+    "pal Fast: import\/audio\/seek\/export\/frame-count\/cancel\/session",
+    "ntsc Full: import\/audio\/seek\/export\/frame-count\/cancel\/session",
+    "ntsc Fast: import\/audio\/seek\/export\/frame-count\/cancel\/session"
+  ],
+  "passed" : true
+}

@@ -5,12 +5,13 @@ extension EditingTool {
         switch self {
         case .film: Color(red: 239/255, green: 170/255, blue: 113/255)
         case .tv: Color(red: 234/255, green: 212/255, blue: 119/255)
+        case .radio: Color(red: 184/255, green: 161/255, blue: 242/255)
         case .sstv: Color(red: 141/255, green: 220/255, blue: 219/255)
         }
     }
 }
 
-/// Native vector rendering of Design/Logo/ana-line-{master,film,sstv,tv}.svg.
+/// Native vector rendering of Design/Logo/ana-line-{master,film,sstv,tv,radio}.svg.
 /// Ligatures move as units; the separator keeps the approved first-version artwork.
 struct AnaLineLogo: View {
     var tool: EditingTool? = nil
@@ -39,6 +40,7 @@ struct AnaLineLogo: View {
         case .film: LogoPaths.film
         case .sstv: LogoPaths.sstv
         case .tv: LogoPaths.tv
+        case .radio: LogoPaths.radio
         case nil: LogoPaths.master
         }
     }
@@ -576,6 +578,112 @@ private enum LogoPaths {
             p.addLine(to: CGPoint(x: 265, y: 65))
             p.addLine(to: CGPoint(x: 265, y: 44))
             p.addLine(to: CGPoint(x: 258, y: 44))
+            p.closeSubpath()
+        }.applying(slant),
+    ]
+    static let radio: [Path] = [
+        Path { p in
+            p.move(to: CGPoint(x: 25, y: 80))
+            p.addLine(to: CGPoint(x: 48, y: 0))
+            p.addLine(to: CGPoint(x: 72, y: 0))
+            p.addLine(to: CGPoint(x: 90, y: 62))
+            p.addLine(to: CGPoint(x: 124, y: 62))
+            p.addLine(to: CGPoint(x: 124, y: 80))
+            p.addLine(to: CGPoint(x: 75, y: 80))
+            p.addLine(to: CGPoint(x: 71, y: 62))
+            p.addLine(to: CGPoint(x: 48, y: 62))
+            p.addLine(to: CGPoint(x: 44, y: 80))
+            p.closeSubpath()
+            p.move(to: CGPoint(x: 52, y: 46))
+            p.addLine(to: CGPoint(x: 67, y: 46))
+            p.addLine(to: CGPoint(x: 60, y: 18))
+            p.closeSubpath()
+            p.move(to: CGPoint(x: 104, y: 80))
+            p.addLine(to: CGPoint(x: 104, y: 0))
+            p.addLine(to: CGPoint(x: 116, y: 0))
+            p.addLine(to: CGPoint(x: 124, y: 8))
+            p.addLine(to: CGPoint(x: 152, y: 48))
+            p.addLine(to: CGPoint(x: 152, y: 0))
+            p.addLine(to: CGPoint(x: 170, y: 0))
+            p.addLine(to: CGPoint(x: 170, y: 80))
+            p.addLine(to: CGPoint(x: 150, y: 80))
+            p.addLine(to: CGPoint(x: 122, y: 32))
+            p.addLine(to: CGPoint(x: 122, y: 80))
+            p.closeSubpath()
+        }.applying(slant),
+        Path { p in
+            p.move(to: CGPoint(x: 179, y: 80))
+            p.addLine(to: CGPoint(x: 202, y: 0))
+            p.addLine(to: CGPoint(x: 226, y: 0))
+            p.addLine(to: CGPoint(x: 249, y: 80))
+            p.addLine(to: CGPoint(x: 229, y: 80))
+            p.addLine(to: CGPoint(x: 225, y: 62))
+            p.addLine(to: CGPoint(x: 202, y: 62))
+            p.addLine(to: CGPoint(x: 198, y: 80))
+            p.closeSubpath()
+            p.move(to: CGPoint(x: 206, y: 46))
+            p.addLine(to: CGPoint(x: 221, y: 46))
+            p.addLine(to: CGPoint(x: 214, y: 18))
+            p.closeSubpath()
+        }.applying(slant),
+        Path { p in
+            p.move(to: CGPoint(x: 323, y: 0))
+            p.addLine(to: CGPoint(x: 343, y: 0))
+            p.addLine(to: CGPoint(x: 343, y: 62))
+            p.addLine(to: CGPoint(x: 414, y: 62))
+            p.addLine(to: CGPoint(x: 414, y: 80))
+            p.addLine(to: CGPoint(x: 323, y: 80))
+            p.closeSubpath()
+            p.move(to: CGPoint(x: 394, y: 0))
+            p.addLine(to: CGPoint(x: 414, y: 0))
+            p.addLine(to: CGPoint(x: 414, y: 80))
+            p.addLine(to: CGPoint(x: 394, y: 80))
+            p.closeSubpath()
+        }.applying(slant),
+        Path { p in
+            p.move(to: CGPoint(x: 423, y: 80))
+            p.addLine(to: CGPoint(x: 423, y: 0))
+            p.addLine(to: CGPoint(x: 435, y: 0))
+            p.addLine(to: CGPoint(x: 443, y: 8))
+            p.addLine(to: CGPoint(x: 471, y: 48))
+            p.addLine(to: CGPoint(x: 471, y: 0))
+            p.addLine(to: CGPoint(x: 489, y: 0))
+            p.addLine(to: CGPoint(x: 489, y: 80))
+            p.addLine(to: CGPoint(x: 469, y: 80))
+            p.addLine(to: CGPoint(x: 441, y: 32))
+            p.addLine(to: CGPoint(x: 441, y: 80))
+            p.closeSubpath()
+        }.applying(slant),
+        Path { p in
+            p.move(to: CGPoint(x: 498, y: 0))
+            p.addLine(to: CGPoint(x: 558, y: 0))
+            p.addLine(to: CGPoint(x: 558, y: 17))
+            p.addLine(to: CGPoint(x: 518, y: 17))
+            p.addLine(to: CGPoint(x: 518, y: 31))
+            p.addLine(to: CGPoint(x: 552, y: 31))
+            p.addLine(to: CGPoint(x: 552, y: 48))
+            p.addLine(to: CGPoint(x: 518, y: 48))
+            p.addLine(to: CGPoint(x: 518, y: 63))
+            p.addLine(to: CGPoint(x: 558, y: 63))
+            p.addLine(to: CGPoint(x: 558, y: 80))
+            p.addLine(to: CGPoint(x: 498, y: 80))
+            p.closeSubpath()
+        }.applying(slant),
+        Path { p in
+            p.move(to: CGPoint(x: 256.846, y: 35))
+            p.addLine(to: CGPoint(x: 257.846, y: 35))
+            p.addLine(to: CGPoint(x: 262.459, y: 16))
+            p.addLine(to: CGPoint(x: 279.923, y: 44))
+            p.addLine(to: CGPoint(x: 284.459, y: 16))
+            p.addLine(to: CGPoint(x: 303.846, y: 35))
+            p.addLine(to: CGPoint(x: 305.846, y: 35))
+            p.addLine(to: CGPoint(x: 308.154, y: 45))
+            p.addLine(to: CGPoint(x: 300.154, y: 45))
+            p.addLine(to: CGPoint(x: 288.615, y: 34))
+            p.addLine(to: CGPoint(x: 284.541, y: 64))
+            p.addLine(to: CGPoint(x: 266.615, y: 34))
+            p.addLine(to: CGPoint(x: 266.154, y: 45))
+            p.addLine(to: CGPoint(x: 259.154, y: 45))
             p.closeSubpath()
         }.applying(slant),
     ]

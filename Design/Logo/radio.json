@@ -1,0 +1,15 @@
+{
+  "mode": "RADIO",
+  "label": "AM / FM",
+  "accent": "#B8A1F2",
+  "accentRGB": [184, 161, 242],
+  "activeButtonForeground": "#000000",
+  "svg": "ana-line-radio.svg",
+  "letterDetails": {
+    "N": "One clipped shoulder; otherwise full diagonal stroke",
+    "E": "Plain broad horizontal strokes",
+    "I": "Plain solid stem"
+  },
+  "separator": "Upright, heavier triangle carrier with two broad folds",
+  "separatorSlant": 0
+}

@@ -30,6 +30,7 @@
 "Receiver" = "接收";
 "Reset SSTV" = "重置 SSTV";
 "About Ana-Line" = "关于 Ana-Line";
+"Early build · features and interface are still changing" = "早期构建 · 功能与界面仍在变动";
 "AnaLine" = "AnaLine";
 "Ana-Line" = "Ana-Line";
 "Language" = "语言";
@@ -372,3 +373,16 @@
 "Finishing video preparation…" = "正在完成视频准备…";
 "Using cached video" = "正在使用缓存视频";
 "Frames dropped" = "丢帧次数";
+
+"Simulation quality" = "模拟档位";
+"Full preserves reference precision. Fast uses the validated mobile profile." = "Full 保留参考精度；Fast 使用经过验证的移动性能档位。";
+"Render and Export…" = "渲染并输出…";
+"Rendering %.0f%% · %.2f×" = "渲染 %.0f%% · %.2f×";
+"Export complete · %.2f× · %@" = "输出完成 · %.2f× · %@";
+"Export cancelled" = "已取消输出";
+"Export failed:" = "输出失败：";
+
+"Cancel Export" = "取消输出";
+
+"Fast · accelerated simulation with validated precision trade-offs" = "Fast · 加速模拟，采用经验证的精度取舍";
+"Full · reference precision for reproducible simulation" = "Full · 参考精度，可复现模拟结果";

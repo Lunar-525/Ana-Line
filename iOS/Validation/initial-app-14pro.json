@@ -1,0 +1,10 @@
+{
+  "checks" : [
+    "pal Full: pixel-content\/import\/audio\/seek\/export\/frame-count\/cancel\/session",
+    "pal Fast: pixel-content\/import\/audio\/seek\/export\/frame-count\/cancel\/session",
+    "ntsc Full: pixel-content\/import\/audio\/seek\/export\/frame-count\/cancel\/session",
+    "ntsc Fast: pixel-content\/import\/audio\/seek\/export\/frame-count\/cancel\/session",
+    "24-second bundled demo: complete native import\/export"
+  ],
+  "passed" : true
+}

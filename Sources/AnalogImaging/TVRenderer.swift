@@ -55,6 +55,7 @@ public actor TVRenderer {
     private var prepared: PreparedFrame?
     private var simulationFrame: Int64?
     private var simulationSeed: UInt64 = 42
+    private var simulationProfile = TVChainProfile.full
 
     /// A frame whose construction has been handed to the pipeline.
     private struct PreparedFrame {
@@ -256,7 +257,7 @@ public actor TVRenderer {
         let frameIndex = Int64((boundedTime * standard.frameRate + 1e-7).rounded(.down))
         // The frame's inputs: cached when this call follows the one we prepared,
         // otherwise read and converted now.
-        let discontinuity = simulationFrame != frameIndex-1 || simulationSeed != settings.seed
+        let discontinuity = simulationFrame != frameIndex-1 || simulationSeed != settings.seed || simulationProfile != settings.performance
             || (prepared != nil && prepared!.frameIndex != frameIndex)
         // Adjacent playback frames retain every FIR, delay line, oscillator and
         // PLL. A seek, a new seed or a frame we did not prepare starts a fresh
@@ -317,6 +318,7 @@ public actor TVRenderer {
         let acquiredAt = ContinuousClock.now
         let decoded = try pipeline.receive()
         simulationSeed = settings.seed
+        simulationProfile = settings.performance
         simulationFrame = frameIndex
         try Task.checkCancellation()
         let decodedAt = ContinuousClock.now
@@ -495,5 +497,109 @@ public enum TVVideoError: Error, LocalizedError {
         case let .processLaunch(tool, reason): "Could not start \(tool): \(reason)"
         case let .processFailed(tool, code, detail): "\(tool) exited with status \(code)\(detail.isEmpty ? "" : ": " + detail)"
         }
+    }
+}
+
+
+public struct TVExportProgress: Sendable {
+    public let fraction: Double
+    /// Media seconds produced per wall-clock second, including file writes.
+    public let speed: Double
+}
+
+extension TVRenderer {
+    private static func runExportEncoder(_ executable: URL, _ arguments: [String], logDirectory: URL) async throws {
+        let logURL = logDirectory.appendingPathComponent("encoder.log")
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let log = try FileHandle(forWritingTo: logURL)
+        let process = Process()
+        process.executableURL = executable; process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice; process.standardError = log
+        defer {
+            if process.isRunning { process.terminate() }
+            try? log.close()
+        }
+        try process.run()
+        while process.isRunning {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        try Task.checkCancellation()
+        guard process.terminationStatus == 0 else {
+            let detail = String(decoding: (try? Data(contentsOf: logURL)) ?? Data(), as: UTF8.self)
+            throw TVVideoError.processFailed("ffmpeg", process.terminationStatus, String(detail.suffix(4096)))
+        }
+    }
+
+    /// Offline, continuous simulation with recovered audio. MOV stores PNG video
+    /// and float PCM, avoiding an additional lossy codec after simulation.
+    public func exportVideo(to destination: URL, channel: TerrestrialSettings,
+                            progress: @escaping @Sendable (TVExportProgress) -> Void) async throws -> TVExportProgress {
+        guard let ffmpeg, normalizedURL != nil else { throw TVVideoError.noVideo }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AnaLine-export-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let rgbURL = directory.appendingPathComponent("video.rgb")
+        let pcmURL = directory.appendingPathComponent("audio.f32le")
+        let movie = destination.deletingLastPathComponent().appendingPathComponent(".AnaLine-" + UUID().uuidString + ".mov")
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: movie)
+            endPlayback()
+        }
+        FileManager.default.createFile(atPath: rgbURL.path, contents: nil)
+        FileManager.default.createFile(atPath: pcmURL.path, contents: nil)
+        let video = try FileHandle(forWritingTo: rgbURL)
+        let audio = try FileHandle(forWritingTo: pcmURL)
+        defer { try? video.close(); try? audio.close() }
+        endPlayback()
+        let frameCount = max(1, Int((duration * standard.frameRate + 1e-7).rounded(.down)))
+        let withAudio = audioPCM != nil
+        let start = ContinuousClock.now
+        var lastUpdate = start
+        for index in 0..<frameCount {
+            try Task.checkCancellation()
+            let preview = try render(time: Double(index)/standard.frameRate, channel: channel, settleAfterSeek: false)
+            let pixels = preview.reception.frame.rgb
+            let bytes = pixels.withUnsafeBufferPointer { source in
+                [UInt8](unsafeUninitializedCapacity: source.count*3) { target, initialized in
+                    for n in source.indices {
+                        for component in 0..<3 {
+                            target[n*3+component] = UInt8((max(0,min(1,source[n][component]))*255).rounded())
+                        }
+                    }
+                    initialized = source.count*3
+                }
+            }
+            try video.write(contentsOf: Data(bytes))
+            if withAudio {
+                try preview.reception.audio.withUnsafeBytes { try audio.write(contentsOf: $0) }
+            }
+            let now = ContinuousClock.now
+            if Self.seconds(lastUpdate.duration(to: now)) >= 0.25 || index == frameCount-1 {
+                let elapsed = max(1e-9, Self.seconds(start.duration(to: now)))
+                progress(TVExportProgress(fraction: Double(index+1)/Double(frameCount),
+                    speed: (Double(index+1)/standard.frameRate)/elapsed))
+                lastUpdate = now
+            }
+            await Task.yield()
+        }
+        try video.close(); try audio.close()
+        try Task.checkCancellation()
+        let rate = standard == .pal ? "25" : "30000/1001"
+        var arguments = ["-v", "error", "-nostdin", "-f", "rawvideo", "-pixel_format", "rgb24",
+                         "-video_size", "\(standard.width)x\(standard.height)", "-framerate", rate,
+                         "-i", rgbURL.path]
+        if withAudio { arguments += ["-f", "f32le", "-ar", "48000", "-ac", "1", "-i", pcmURL.path] }
+        arguments += ["-c:v", "png", "-pix_fmt", "rgb24", "-vf", standard == .pal ? "setsar=16/15" : "setsar=8/9"]
+        if withAudio { arguments += ["-c:a", "pcm_f32le"] }
+        arguments += ["-frames:v", String(frameCount), "-t", String(Double(frameCount)/standard.frameRate), movie.path]
+        try await Self.runExportEncoder(ffmpeg, arguments, logDirectory: directory)
+        try Task.checkCancellation()
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: movie)
+        } else { try FileManager.default.moveItem(at: movie, to: destination) }
+        let result = TVExportProgress(fraction: 1, speed: (Double(frameCount)/standard.frameRate)
+            / max(1e-9, Self.seconds(start.duration(to: .now))))
+        progress(result)
+        return result
     }
 }

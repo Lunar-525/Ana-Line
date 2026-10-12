@@ -5,7 +5,7 @@ import AnalogCore
 import AnalogImaging
 import UniformTypeIdentifiers
 
-enum EditingTool: String, CaseIterable { case film = "Film Damage", sstv = "SSTV", tv = "Terrestrial" }
+enum EditingTool: String, CaseIterable { case film = "Film Damage", sstv = "SSTV", tv = "Terrestrial", radio = "Radio" }
 
 @MainActor
 final class PreviewModel: ObservableObject {
@@ -93,6 +93,50 @@ final class PreviewModel: ObservableObject {
         }
     }
     private var tvSourceURL: URL?
+    @Published private(set) var tvExporting = false
+    @Published private(set) var tvExportProgress: Double = 0
+    @Published private(set) var tvExportSpeed: Double = 0
+    @Published private(set) var tvExportMessage = ""
+    private var tvExportTask: Task<Void, Never>?
+
+    func cancelTVExport() { tvExportTask?.cancel() }
+
+    func exportTVVideo() {
+        guard !busy, let source = tvSourceURL else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.quickTimeMovie]
+        panel.nameFieldStringValue = source.deletingPathExtension().lastPathComponent + "-AnaLine.mov"
+        guard panel.runModal() == .OK, let output = panel.url else { return }
+        // Export always uses its own renderer so preview/seek state cannot affect it.
+        pauseTVPlayback()
+        renderTask?.cancel(); renderTask = nil; renderRun += 1
+        let standard = tvStandard, channel = tvChannel
+        tvExporting = true; busy = true; tvExportProgress = 0; tvExportSpeed = 0; tvExportMessage = ""
+        tvExportTask = Task { [self] in
+            let exporter = TVRenderer()
+            do {
+                _ = try await exporter.loadVideo(source, standard: standard,
+                    cache: tvPreferences.configuration)
+                let result = try await exporter.exportVideo(to: output, channel: channel) { progress in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.tvExporting else { return }
+                        self.tvExportProgress = progress.fraction
+                        self.tvExportSpeed = progress.speed
+                    }
+                }
+                tvExportProgress = 1; tvExportSpeed = result.speed
+                status = String(format: L("Export complete · %.2f× · %@"), result.speed, output.lastPathComponent)
+            } catch is CancellationError {
+                status = L("Export cancelled")
+            } catch {
+                status = L("Export failed:") + " " + error.localizedDescription
+            }
+            tvExportMessage = status
+            await exporter.unloadVideo()
+            tvExporting = false; busy = false; tvExportTask = nil
+        }
+    }
+
     @Published var sessionURL: URL?
     private var restoringSession = false
     private var queuedSessionURL: URL?
@@ -900,11 +944,24 @@ struct ContentView: View {
                         ToolModeSwitch(selection: $model.tool)
                             .disabled(model.busy)
                     }
-                    if model.tool == .tv { TVStatusText(state: model.tvPreviewState) }
+                    if model.tool == .tv {
+                        TVStatusText(state: model.tvPreviewState)
+                        if model.tvExporting {
+                            HStack {
+                                ProgressView(value: model.tvExportProgress).frame(width: 120)
+                                Text(String(format: L("Rendering %.0f%% · %.2f×"), model.tvExportProgress*100, model.tvExportSpeed))
+                                    .font(.caption).monospacedDigit()
+                                Button(L("Cancel")) { model.cancelTVExport() }
+                            }
+                        } else if !model.tvExportMessage.isEmpty {
+                            Text(model.tvExportMessage).font(.caption).textSelection(.enabled)
+                        }
+                    }
                     else {
                         Text(model.status).font(.caption).foregroundStyle(.secondary)
                             .lineLimit(1).textSelection(.enabled).help(model.status)
                     }
+                    EarlyBuildStamp()
                 }
                 Spacer()
                 if model.busy || (model.rendering && !model.tvPlaying) { ProgressView().controlSize(.small) }
@@ -919,6 +976,11 @@ struct ContentView: View {
             .padding(20)
             .padding(.top, 10)
             .background(Color.black.ignoresSafeArea(.container, edges: .top))
+            // Hung before the negative padding below. That padding is what lets
+            // the header bleed past the workspace gutter to the window's own side
+            // and top edges, and it reports the *inset* frame, so an overlay hung
+            // after it would sit 20pt low and 20pt short on each side.
+            .overlay(alignment: .top) { HazardStripeBand() }
             .modifier(WorkspaceHeaderDrag())
             .padding(.horizontal, -20)
             .padding(.top, -20)
@@ -955,6 +1017,8 @@ struct ContentView: View {
                         }
                     }.padding(.bottom,8).padding(.horizontal,6)
                 }.padding(.horizontal,-6)
+            } else if model.tool == .radio {
+                RadioFMView()
             } else {
             HStack(alignment: .top,spacing: 16) {
                 VStack(spacing: 12) {
@@ -979,20 +1043,20 @@ struct ContentView: View {
                     .disabled(model.busy || model.original == nil)
             }.frame(minHeight: 360)
             }
-            if model.tool != .tv { HStack {
+            if model.tool != .tv && model.tool != .radio { HStack {
                 Spacer()
                 Text(model.tool == .sstv ? "\(model.renderedSSTV.mode.rawValue) · \(L("Signal simulation"))" : model.renderedPreset?.name ?? L("Original / No LUT"))
             }
                 .font(.caption).foregroundStyle(.secondary)
             }
-            if model.tool != .tv { Text(model.tool == .sstv ? "\(L("Fit")) \(model.renderedSSTV.mode.dimensions) → TX cache → \(L("baseband channel impairment")) → FM demodulation → \(model.renderedSSTV.mode.rawValue) \(L("reconstruction"))" : L("Source ICC → LUT color transform → LUT Mix → Grain → procedural light leak → sRGB display"))
+            if model.tool != .tv && model.tool != .radio { Text(model.tool == .sstv ? "\(L("Fit")) \(model.renderedSSTV.mode.dimensions) → TX cache → \(L("baseband channel impairment")) → FM demodulation → \(model.renderedSSTV.mode.rawValue) \(L("reconstruction"))" : L("Source ICC → LUT color transform → LUT Mix → Grain → procedural light leak → sRGB display"))
                 .font(.caption2).foregroundStyle(.secondary)
             }
             if model.tool == .film && model.renderedPreset?.role == "sceneToDisplay" {
                 Text(L("PoLUT: adjust pre-LUT exposure to place middle gray; Adobe RGB output is gamut-compressed to sRGB. JPEG already has tone mapping, so scene light is approximate."))
                     .font(.caption).foregroundStyle(.orange)
             }
-            if model.tool != .tv { Divider()
+            if model.tool != .tv && model.tool != .radio { Divider()
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 300),alignment: .leading)],alignment: .leading,spacing: 12) {
                 ForEach(parameters,id: \.0) { name,value in
                     HStack { Text(name).foregroundStyle(.secondary); Spacer(); Text(value).monospacedDigit() }
