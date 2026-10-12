@@ -111,6 +111,35 @@ final class TVFramePipelineTests: XCTestCase {
         }
     }
 
+    /// A run ends with frames still in flight — a benchmark case stops on its
+    /// duration, a player stops on a seek. Those submissions took a permit that
+    /// `receive()` never returns, and libdispatch traps when a semaphore is
+    /// disposed with permits consumed, so teardown must hand them back. This test
+    /// runs several such transitions; without the fix it dies with SIGTRAP.
+    func testTeardownWithFramesInFlightIsSafe() throws {
+        let system = TerrestrialSystem.palDK
+        let settings = damaged(system)
+        let source = TVFrame.colorBars(system.video)
+        let built: @Sendable (Int64) throws -> (CompositeVideo, [Float]?) = { index in
+            let start = TVSoundClock.offset(frame: index,standard: system.video)
+            let audio = (0..<TVSoundClock.count(frame: index,standard: system.video)).map {
+                Float(0.25*sin(2 * Double.pi * 1000 * Double(start+Int64($0))/48_000))
+            }
+            return (try TVEngine.encode(source,frameIndex: index,damage: settings.transmitter.encoder),audio)
+        }
+        for _ in 0..<3 {
+            let pipeline = TVFramePipeline(system: system)
+            try pipeline.submit(TVFrameRequest(frameIndex: 0,settings: settings,build: built))
+            for n in 0..<6 {
+                if pipeline.allowsLookahead {
+                    try pipeline.submit(TVFrameRequest(frameIndex: Int64(n+1),settings: settings,build: built))
+                }
+                _ = try pipeline.receive()
+            }
+            XCTAssertEqual(pipeline.pendingFrames,1,"One frame is deliberately left in flight")
+        }
+    }
+
     /// The shared front-end gain is measured by the receiver and consumed by the
     /// next frame's transmitter, so that combination cannot be overlapped.
     func testSharedGainCouplingRefusesOverlap() throws {

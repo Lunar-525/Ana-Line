@@ -124,6 +124,17 @@ public final class TVFramePipeline: @unchecked Sendable {
         free = DispatchSemaphore(value: depth)
     }
 
+    deinit {
+        // A run can end with frames still in flight: those submissions took a
+        // permit that `receive()` will never return, and libdispatch traps when a
+        // semaphore is disposed with permits already consumed ("deallocated while
+        // in use"). Hand them back so teardown is always legal.
+        lock.lock()
+        let outstanding = inFlight
+        lock.unlock()
+        for _ in 0..<outstanding { free.signal() }
+    }
+
     /// True while the stages may run ahead of the caller. False once a submitted
     /// frame carries the shared-gain coupling, so the caller stops prefetching
     /// until that frame has been received.
