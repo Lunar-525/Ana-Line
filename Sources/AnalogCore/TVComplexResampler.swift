@@ -74,28 +74,30 @@ private struct TVResamplerWork: @unchecked Sendable {
             if localFirst >= 0, localFirst <= sampleCount-tapCount {
                 // The tap sum is a chain of dependent float adds, and at these
                 // lengths that chain, not the multiply throughput, sets the cost.
-                // Four independent partial sums keep four adds in flight; the
-                // result differs only in the last bits of the sum.
-                var si0: Float = 0, si1: Float = 0, si2: Float = 0, si3: Float = 0
-                var sq0: Float = 0, sq1: Float = 0, sq2: Float = 0, sq3: Float = 0
+                // Four independent partial sums keep four adds in flight. They are
+                // lanes of one SIMD4 pair so the multiply-accumulate runs on the
+                // vector unit, and the lane assignment, the order inside each lane
+                // and the final (s0+s1)+(s2+s3) fold are exactly the scalar ones,
+                // so the sum is bit-identical rather than merely close.
+                var accI = SIMD4<Float>(), accQ = SIMD4<Float>()
                 var k = 0
                 while k + 4 <= tapCount {
-                    let w0 = tb[offset+k], w1 = tb[offset+k+1]
-                    let w2 = tb[offset+k+2], w3 = tb[offset+k+3]
-                    let i0 = xb[localFirst+k], i1 = xb[localFirst+k+1]
-                    let i2 = xb[localFirst+k+2], i3 = xb[localFirst+k+3]
-                    let q0 = yb[localFirst+k], q1 = yb[localFirst+k+1]
-                    let q2 = yb[localFirst+k+2], q3 = yb[localFirst+k+3]
-                    si0 += w0*i0; si1 += w1*i1; si2 += w2*i2; si3 += w3*i3
-                    sq0 += w0*q0; sq1 += w1*q1; sq2 += w2*q2; sq3 += w3*q3
+                    let w = UnsafeRawPointer(tb+offset+k).loadUnaligned(as: SIMD4<Float>.self)
+                    let xi = UnsafeRawPointer(xb+localFirst+k).loadUnaligned(as: SIMD4<Float>.self)
+                    let xq = UnsafeRawPointer(yb+localFirst+k).loadUnaligned(as: SIMD4<Float>.self)
+                    accI += w*xi; accQ += w*xq
                     k += 4
                 }
+                // The remaining taps have always gone into the first partial sum,
+                // so they are added to lane 0 in the same order.
+                var si0 = accI[0], sq0 = accQ[0]
                 while k < tapCount {
                     let weight = tb[offset+k]
                     si0 += weight*xb[localFirst+k]; sq0 += weight*yb[localFirst+k]
                     k += 1
                 }
-                oi[m] = (si0+si1)+(si2+si3); oq[m] = (sq0+sq1)+(sq2+sq3)
+                oi[m] = (si0+accI[1])+(accI[2]+accI[3])
+                oq[m] = (sq0+accQ[1])+(accQ[2]+accQ[3])
             } else {
                 var si: Float = 0, sq: Float = 0
                 for k in 0..<tapCount {

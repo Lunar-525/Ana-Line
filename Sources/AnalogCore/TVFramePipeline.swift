@@ -110,6 +110,12 @@ public final class TVFramePipeline: @unchecked Sendable {
     public private(set) var progress = TVProgressLedger()
     /// Refuse a repeated or rewound frame instead of recording it.
     public var strictFrameOrder = false
+    /// Run the shared front end on the thread that calls `receive()` instead of on
+    /// a third thread. That halves the cross-thread hand-offs per frame, which is
+    /// what a latency-sensitive caller wants: the transmit still overlaps, but the
+    /// caller waits for one hand-off instead of two, so a frame's tail latency does
+    /// not depend on when a second worker thread gets scheduled.
+    public var frontEndOnCaller = false
     /// Transmit passes that demonstrably ran while an earlier frame was still
     /// being received: deterministic evidence of overlap.
     public var overlapped: Int { shared.lock.lock(); defer { shared.lock.unlock() }; return shared.overlapped }
@@ -201,6 +207,7 @@ public final class TVFramePipeline: @unchecked Sendable {
         slots.append(slot)
         let box = self.box, frontBox = self.frontBox, shared = self.shared
         let frontQueue = self.frontQueue
+        let frontOnCallerHere = frontEndOnCaller
         lock.unlock()
         free.wait()
         let frameSystem = system
@@ -245,6 +252,11 @@ public final class TVFramePipeline: @unchecked Sendable {
             // Hand the record straight to the front-end stage, which runs on its
             // own thread so three different frames are in flight at once.
             let channel = payload.output.channel
+            if frontOnCallerHere {
+                // The caller runs the front end itself, right after this returns.
+                slot.ready.signal()
+                return
+            }
             frontQueue.async {
                 var front = frontBox.stage
                 let started = ContinuousClock.now
@@ -293,7 +305,19 @@ public final class TVFramePipeline: @unchecked Sendable {
         }
         free.signal()
         if let failure = slot.failure { throw failure }
-        guard let payload = slot.transmit, let front = slot.front else { throw TVError.invalidSignal }
+        guard let payload = slot.transmit else { throw TVError.invalidSignal }
+        let front: TVFrontEndOutput
+        if frontEndOnCaller {
+            var frontStage = frontBox.stage
+            let frontStarted = ContinuousClock.now
+            front = try frontStage.process(payload.output.channel, settings: payload.settings,
+                                           started: frontStarted)
+            frontBox.stage = frontStage
+            slot.started = frontStarted
+        } else {
+            guard let ready = slot.front else { throw TVError.invalidSignal }
+            front = ready
+        }
         lock.lock()
         if payload.settings.frontEnd.agcEnabled { couplingsInFlight -= 1 }
         lock.unlock()

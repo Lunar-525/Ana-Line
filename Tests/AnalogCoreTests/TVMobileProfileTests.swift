@@ -326,6 +326,38 @@ final class TVMobileProfileTests: XCTestCase {
         }
     }
 
+    /// The thermal profile must stay inside the same corridor the phone profile
+    /// was held to. It is only allowed to trade work whose effect on the picture
+    /// is far below any visible threshold, so this is the test that proves it.
+    func testHotProfileStaysInsideThePhoneCorridor() throws {
+        for system in TerrestrialSystem.allCases {
+            var mobile = TVUnifiedChannelEngine(system: system)
+            var hot = TVUnifiedChannelEngine(system: system)
+            var settings = damaged(system); settings.carrierToNoiseDB = 100
+            var hotSettings = settings
+            hotSettings.performance = .hot
+            hotSettings.performance.noiseGenerator = .sequentialBoxMuller
+            let source = TVFrame.colorBars(system.video)
+            for frame: Int64 in 0..<10 {
+                let cvbs = try TVEngine.encode(source,frameIndex: frame)
+                let audio = tone(system,frame: frame)
+                let a = try mobile.process(cvbs,settings: settings,audio: audio)
+                let b = try hot.process(cvbs,settings: hotSettings,audio: audio)
+                if frame >= 4 {
+                    XCTAssertEqual(a.lock,.locked,"\(system) phone frame \(frame)")
+                    XCTAssertEqual(b.lock,.locked,"\(system) hot frame \(frame)")
+                    let error = maximumRGBError(a.frame,b.frame)
+                    print("hot corridor",system.rawValue,"frame",frame,"rgb error",error)
+                    XCTAssertLessThan(error,0.02,"\(system) frame \(frame) vision")
+                    var audioError: Float = 0
+                    for (x,y) in zip(a.audio,b.audio) { audioError = max(audioError,abs(x-y)) }
+                    print("hot corridor",system.rawValue,"frame",frame,"audio error",audioError)
+                    XCTAssertLessThan(audioError,0.02,"\(system) frame \(frame) companion")
+                }
+            }
+        }
+    }
+
     /// The shipped mobile profile, including the concurrent noise realization,
     /// must still recover vision and the companion tone in one pass.
     func testShippedMobileProfileRecoversVisionAndSound() throws {

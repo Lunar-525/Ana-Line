@@ -106,6 +106,41 @@ public struct TVChainProfile: Codable, Equatable, Sendable {
     /// extraction kernel and the PA anti-alias kernel all keep their reference
     /// length: shortening each was measured to buy nothing or, for the
     /// companion upsample, to leak images into the picture.
+    /// Chain used while the device is thermally limited.
+    ///
+    /// Sustained runs show the frame time roughly tracking the clock: on a 14 Pro
+    /// a 180 s damaged case loses about 40% of its clock and its frame time
+    /// doubles with it, while the first third sits comfortably inside budget. The
+    /// only knobs reduced here are ones whose effect on the recovered signal is
+    /// far below any visible threshold — the phase loop and AFC update rate once
+    /// the carrier is tracked, the accuracy of the amplifier envelope estimate,
+    /// the amplifier table resolution and the number of spectrum windows. What is
+    /// *not* touched is anything that changes the picture: kernel lengths, sample
+    /// rates, the frame rate and the modulation itself.
+    ///
+    /// The phase-loop stride is deliberately left at the phone value. Raising it
+    /// to 4 was measured to be visible on NTSC — its carrier sits exactly at fs/4,
+    /// so a stride-4 phase update aliases with the colour subcarrier and the
+    /// corridor test caught recovered-picture errors of 0.77, two orders of
+    /// magnitude past the threshold. Any future knob belongs behind that test.
+    public static let hot = TVChainProfile(
+        soundUpsampleRadius: 6, soundUpsamplePhases: 512, soundExtractionRadius: 12,
+        soundResamplerSinglePrecision: true, soundSynthesisIntegerSchedule: true,
+        carrierPLLStride: 2, noiseGenerator: .parallelBoxMuller,
+        amplifierAntiAliasRadius: 12, amplifierTablePoints: 1024, amplifierCouplingStride: 8,
+        afcLockedDecimation: 16, sustainedLossFrames: 8, spectrumWindows: 1)
+
+    /// Chain for the device's current thermal state: the phone profile while
+    /// there is headroom, the hot profile once the device reports serious or
+    /// critical. Reverting is immediate, so a device that cools goes straight
+    /// back to full phone quality.
+    public static func forThermalState(_ state: ProcessInfo.ThermalState) -> TVChainProfile {
+        switch state {
+        case .serious, .critical: hot
+        default: mobile
+        }
+    }
+
     public static let mobile = TVChainProfile(
         soundUpsampleRadius: 6, soundUpsamplePhases: 512, soundExtractionRadius: 12,
         soundResamplerSinglePrecision: true, soundSynthesisIntegerSchedule: true,

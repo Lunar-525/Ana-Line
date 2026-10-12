@@ -44,9 +44,36 @@ public actor TVRenderer {
     // interactive QoS across the job and its concurrent filter/sample workers.
     // No process-wide priority or system power setting is changed.
     private let frameQueue = DispatchQueue(label: "AnaLine.TV.Frame",qos: .userInteractive)
-    private var terrestrial = TVUnifiedChannelEngine(system: .palDK)
+    /// Streaming engine. Its transmit stage runs on its own thread at the same QoS
+    /// as this queue, so the frame that follows the one being received is built
+    /// and transmitted during the gap between render calls instead of on the
+    /// call's critical path.
+    private var pipeline: TVFramePipeline?
+    /// The next playback frame, already handed to the pipeline and not yet
+    /// received: its source pixels are cached too, so the next call neither reads
+    /// the decoder pipe again nor converts them twice.
+    private var prepared: PreparedFrame?
     private var simulationFrame: Int64?
     private var simulationSeed: UInt64 = 42
+
+    /// A frame whose construction has been handed to the pipeline.
+    private struct PreparedFrame {
+        let frameIndex: Int64
+        let frame: TVFrame
+        let original: CGImage
+        let audio: [Float]?
+        /// Encode time measured on the transmit thread, read once the frame has
+        /// been received (the hand-off semaphore orders the two).
+        let timing: EncodeTiming
+    }
+    private final class EncodeTiming: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Duration = .zero
+        var duration: Duration {
+            get { lock.lock(); defer { lock.unlock() }; return value }
+            set { lock.lock(); value = newValue; lock.unlock() }
+        }
+    }
     private let executableSearchPath: String
 
     public init() {
@@ -185,7 +212,7 @@ public actor TVRenderer {
         guard let video = preparedVideos[standard] else { throw TVVideoError.noVideo }
         endPlayback()
         self.standard = standard; normalizedURL = video.url; duration = video.duration
-        terrestrial = TVUnifiedChannelEngine(system: TerrestrialSystem(video: standard))
+        pipeline = nil; prepared = nil
         return duration
     }
 
@@ -208,7 +235,10 @@ public actor TVRenderer {
         }
     }
 
-    public func endPlayback() { reader?.close(); reader = nil; simulationFrame = nil }
+    public func endPlayback() {
+        reader?.close(); reader = nil; simulationFrame = nil
+        pipeline = nil; prepared = nil
+    }
 
     public func render(time: Double, channel settings: TerrestrialSettings? = nil,settleAfterSeek: Bool = true) throws -> Preview {
         try Task.checkCancellation()
@@ -224,13 +254,103 @@ public actor TVRenderer {
         guard let ffmpeg, let normalizedURL else { throw TVVideoError.noVideo }
         let boundedTime = min(max(0, time), max(0, duration - 1 / standard.frameRate))
         let frameIndex = Int64((boundedTime * standard.frameRate + 1e-7).rounded(.down))
-        let expectedBytes = standard.width * standard.height * 3
+        // The frame's inputs: cached when this call follows the one we prepared,
+        // otherwise read and converted now.
+        let discontinuity = simulationFrame != frameIndex-1 || simulationSeed != settings.seed
+            || (prepared != nil && prepared!.frameIndex != frameIndex)
+        // Adjacent playback frames retain every FIR, delay line, oscillator and
+        // PLL. A seek, a new seed or a frame we did not prepare starts a fresh
+        // receiver acquisition.
+        if discontinuity || pipeline == nil {
+            // The stages must run at the same QoS as this queue: a UI-priority
+            // caller blocking on userInitiated workers is a priority inversion, and
+            // under load the frames then arrive late.
+            let fresh = TVFramePipeline(system: TerrestrialSystem(video: standard), seed: settings.seed,
+                                        qos: DispatchQoS(qosClass: .userInteractive,relativePriority: 0))
+            // The caller runs the shared front end itself and waits only for the
+            // transmit hand-off: one cross-thread hop per frame instead of two.
+            fresh.frontEndOnCaller = true
+            pipeline = fresh
+            prepared = nil
+        }
+        guard let pipeline else { throw TVVideoError.noVideo }
+        let frame: TVFrame
+        let original: CGImage
+        let audio: [Float]?
+        let timing: EncodeTiming
+        var reusedPrepared = false
+        if let ready = prepared, ready.frameIndex == frameIndex {
+            frame = ready.frame; original = ready.original; audio = ready.audio; timing = ready.timing
+            reusedPrepared = true
+            prepared = nil
+        } else {
+            let bytes = try readSourceFrame(frameIndex,ffmpeg: ffmpeg,normalizedURL: normalizedURL,
+                                            expectedBytes: standard.width*standard.height*3)
+            frame = try makeFrame(bytes)
+            original = try Self.image(bytes,width: standard.width,height: standard.height)
+            audio = sourceAudio(frame: frameIndex)
+            timing = EncodeTiming()
+        }
+        let sourceDone = ContinuousClock.now
+        if !reusedPrepared {
+            if discontinuity {
+                // Seek acquisition uses two frozen-picture pre-roll frames. This
+                // settles carrier/AGC loops before a paused preview, without
+                // inventing RF lock.
+                for prior in settleAfterSeek ? [max(0, frameIndex-2), max(0, frameIndex-1)] : [] {
+                    try Task.checkCancellation()
+                    let priorAudio = sourceAudio(frame: prior)
+                    try pipeline.submit(TVFrameRequest(frameIndex: prior,settings: settings) { _ in
+                        (try TVEngine.encode(frame,frameIndex: prior,execution: settings.execution,damage: settings.transmitter.encoder),priorAudio)
+                    })
+                    _ = try pipeline.receive()
+                }
+            }
+            try Task.checkCancellation()
+            try pipeline.submit(TVFrameRequest(frameIndex: frameIndex,settings: settings) { index in
+                let encodeStart = ContinuousClock.now
+                let composite = try TVEngine.encode(frame,frameIndex: index,execution: settings.execution,damage: settings.transmitter.encoder)
+                timing.duration = encodeStart.duration(to: .now)
+                return (composite,audio)
+            })
+        }
+        let acquiredAt = ContinuousClock.now
+        let decoded = try pipeline.receive()
+        simulationSeed = settings.seed
+        simulationFrame = frameIndex
+        try Task.checkCancellation()
+        let decodedAt = ContinuousClock.now
+        let image = try Self.image(decoded.frame)
+        let finished = ContinuousClock.now
+        // Hand the next playback frame over now, so its construction, transmit and
+        // front end run during the gap before the next call and that call is left
+        // with detection and this image conversion only. A call that just went
+        // through a discontinuity does not: the stream is dropping or jumping
+        // frames, so the prepared frame would very likely be discarded and its
+        // source read, conversion and transmit wasted, slowing a producer that is
+        // already behind.
+        prepared = discontinuity ? nil
+            : prepareLookahead(after: frameIndex,ffmpeg: ffmpeg,normalizedURL: normalizedURL,
+                               settings: settings)
+        return Preview(original: original, image: image, duration: duration,
+            frameIndex: frameIndex, encodeSeconds: Self.seconds(timing.duration),
+            decodeSeconds: Self.seconds(acquiredAt.duration(to: decodedAt)),
+            sourceSeconds: Self.seconds(started.duration(to: sourceDone)),
+            outputSeconds: Self.seconds(decodedAt.duration(to: finished)),
+            prerollSeconds: discontinuity && !reusedPrepared
+                ? Self.seconds(sourceDone.duration(to: acquiredAt)) : 0, reception: decoded)
+    }
+
+    /// Read one frame's pixels from the decoder pipe, restarting it for large or
+    /// backward jumps exactly as playback always has.
+    private func readSourceFrame(_ frameIndex: Int64, ffmpeg: URL, normalizedURL: URL,
+                                 expectedBytes: Int) throws -> Data {
         // Reuse a backpressured RGB pipe for nearby forward frames. Large or
         // backward seeks restart at the requested timestamp instead of decoding
         // the whole clip or spawning FFmpeg again for every playback frame.
         if reader == nil || frameIndex < nextFrameIndex || frameIndex - nextFrameIndex > 8 {
-            endPlayback()
-            let timestamp = Double(frameIndex) / standard.frameRate
+            reader?.close(); reader = nil; prepared = nil
+            let timestamp = Double(frameIndex)/standard.frameRate
             reader = try TVFFmpegProcess(ffmpeg, ["-hide_banner", "-loglevel", "error", "-ss",
                 String(format: "%.9f", timestamp), "-threads", "2", "-filter_threads", "1", "-i", normalizedURL.path, "-map", "0:v:0", "-an",
                 "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
@@ -244,9 +364,12 @@ public actor TVRenderer {
                 nextFrameIndex += 1
             }
         } catch { endPlayback(); throw error }
-        try Task.checkCancellation()
-        // The pipe has supplied exactly width*height*3 bytes. Borrow once,
-        // avoiding Data's per-subscript checks/bridging for every color component.
+        return bytes
+    }
+
+    /// Convert raw RGB24 bytes into a frame, borrowing once so Data's per-subscript
+    /// checks and bridging do not run for every colour component.
+    private func makeFrame(_ bytes: Data) throws -> TVFrame {
         let pixelCount = standard.width*standard.height
         let rgb = bytes.withUnsafeBytes { raw in
             let source = raw.baseAddress!.assumingMemoryBound(to: UInt8.self)
@@ -260,41 +383,36 @@ public actor TVRenderer {
                 initialized = pixelCount
             }
         }
-        let frame = try TVFrame(standard: standard, rgb: rgb)
-        let original = try Self.image(bytes, width: standard.width, height: standard.height)
-        let encodeStart = ContinuousClock.now
-        let composite = try TVEngine.encode(frame, frameIndex: frameIndex, execution: settings.execution, damage: settings.transmitter.encoder)
-        try Task.checkCancellation()
-        let encodedAt = ContinuousClock.now
-        let reacquiring = simulationFrame != frameIndex-1 || simulationSeed != settings.seed
-        // Adjacent playback frames retain every FIR, delay line, oscillator and PLL.
-        // A seek or paused re-render starts a fresh receiver acquisition.
-        if reacquiring {
-            terrestrial = TVUnifiedChannelEngine(system: TerrestrialSystem(video: standard), seed: settings.seed)
-            // Seek acquisition uses two frozen-picture pre-roll frames. This settles
-            // carrier/AGC loops before a paused preview, without inventing RF lock.
-            for prior in settleAfterSeek ? [max(0, frameIndex-2), max(0, frameIndex-1)] : [] {
-                try Task.checkCancellation()
-                let signal = try TVEngine.encode(frame,frameIndex: prior,execution: settings.execution,damage: settings.transmitter.encoder)
-                let pcm = sourceAudio(frame: prior)
-                _ = try terrestrial.process(signal,settings: settings,audio: pcm)
-            }
+        return try TVFrame(standard: standard, rgb: rgb)
+    }
+
+    /// Prepare and submit the frame the playback clock is expected to ask for
+    /// next. Anything that fails here — the end of the clip, a cancellation, a
+    /// reader error — leaves nothing in flight, so the next call simply acquires
+    /// its frame the ordinary way.
+    private func prepareLookahead(after frameIndex: Int64, ffmpeg: URL, normalizedURL: URL,
+                                  settings: TerrestrialSettings) -> PreparedFrame? {
+        guard let pipeline else { return nil }
+        let next = frameIndex+1
+        guard Double(next) <= duration*standard.frameRate else { return nil }
+        do {
+            let bytes = try readSourceFrame(next,ffmpeg: ffmpeg,normalizedURL: normalizedURL,
+                                            expectedBytes: standard.width*standard.height*3)
+            let frame = try makeFrame(bytes)
+            let original = try Self.image(bytes,width: standard.width,height: standard.height)
+            let audio = sourceAudio(frame: next)
+            let timing = EncodeTiming()
+            try pipeline.submit(TVFrameRequest(frameIndex: next,settings: settings) { index in
+                let encodeStart = ContinuousClock.now
+                let composite = try TVEngine.encode(frame,frameIndex: index,execution: settings.execution,damage: settings.transmitter.encoder)
+                timing.duration = encodeStart.duration(to: .now)
+                return (composite,audio)
+            })
+            return PreparedFrame(frameIndex: next,frame: frame,original: original,audio: audio,timing: timing)
+        } catch {
+            prepared = nil
+            return nil
         }
-        simulationSeed = settings.seed
-        let acquiredAt = ContinuousClock.now
-        let pcm = sourceAudio(frame: frameIndex)
-        let decoded = try terrestrial.process(composite,settings: settings,audio: pcm)
-        simulationFrame = frameIndex
-        try Task.checkCancellation()
-        let decodedAt = ContinuousClock.now
-        let image = try Self.image(decoded.frame)
-        let finished = ContinuousClock.now
-        return Preview(original: original, image: image, duration: duration,
-            frameIndex: frameIndex, encodeSeconds: Self.seconds(encodeStart.duration(to: encodedAt)),
-            decodeSeconds: Self.seconds(acquiredAt.duration(to: decodedAt)),
-            sourceSeconds: Self.seconds(started.duration(to: encodeStart)),
-            outputSeconds: Self.seconds(decodedAt.duration(to: finished)),
-            prerollSeconds: reacquiring ? Self.seconds(encodedAt.duration(to: acquiredAt)) : 0, reception: decoded)
     }
 
     private static func seconds(_ duration: Duration) -> Double {
