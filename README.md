@@ -7,7 +7,7 @@
 
 AnaLine 是一个用 Swift 编写的模拟影像实验工具：它在 macOS 上把「信号损伤」做成可交互的链路，而不是滤镜。项目提供四种模式——胶片效果（Film Damage）、慢扫描电视（SSTV）、地面模拟电视（Terrestrial）与单声道 FM 收发仿真（Radio）。所有模型都是**可控的创意仿真**，不是经过实测标定的胶片系统，也不是通过标准一致性认证的广播设备。
 
-**地面模拟电视是项目的重心。** 它把一帧画面编码为 CVBS，经负极性 AM／VSB 调制，与单声道 FM 伴音合成到同一个射频频道，再完整解调回来——中途经过地形传播、天气、接收机前端、AGC、载波恢复与同步重建。这条链路的仿真引擎称为 **CVBS Engine**。
+**地面模拟电视是项目的重心。** 它把一帧画面编码为 CVBS，经负极性 AM／VSB 调制，与单声道 FM 伴音合成到同一个射频频道，再完整解调回来——中途经过地形传播、天气、接收机前端、AGC、载波恢复与同步重建。这条链路的仿真引擎叫 **AsyncAlter**。
 
 ![AnaLine Terrestrial 工作区](Assets/screenshot.png)
 
@@ -24,14 +24,16 @@ AnaLine 是一个用 Swift 编写的模拟影像实验工具：它在 macOS 上�
 
 ---
 
-# 地面模拟电视（CVBS Engine）
+# 地面模拟电视 · AsyncAlter 引擎
 
 <p>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="Design/AsyncAlter/asyncalter-wordmark-v5.svg">
-    <img alt="CVBS Engine powered by AsyncAlter" src="Design/AsyncAlter/asyncalter-preview-v5.png" width="400">
+    <img alt="AsyncAlter" src="Design/AsyncAlter/asyncalter-preview-v5.png" width="400">
   </picture>
 </p>
+
+*AsyncAlter 的标志，矢量源文件为 [asyncalter-wordmark-v5.svg](Design/AsyncAlter/asyncalter-wordmark-v5.svg)。*
 
 ## 信号链
 
