@@ -8,9 +8,13 @@
 .build/
 .swiftpm/
 /build/
+/iOS/build/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+*.xcresult
 *.dSYM/
 *.ipa
 *.dmg
@@ -44,6 +48,7 @@ venv/
 # Local test media without a redistribution grant
 /Assets/bliss.jpg
 /Assets/rickroll.mp4
+/Assets/HandInHand.mp4
 
 # Logs and temporary output
 *.log
