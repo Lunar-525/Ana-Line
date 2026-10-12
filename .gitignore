@@ -49,3 +49,6 @@ venv/
 *.log
 *.tmp
 /coverage/
+
+# Local benchmark output
+/iOS/Reports/*.json
