@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw the iPhone 14 Pro performance chart (cold burst vs sustained heat).
+"""Draw the iPhone performance chart (14 Pro cold vs hot, with the 16 Pro run).
 
 Every number is recomputed from the per-frame samples of the reports the
 benchmark app wrote, so the figure cannot drift from the raw data. Run:
@@ -27,8 +27,8 @@ GRID = "#e3e7ec"
 BUDGET = "#d43f3a"
 COLD = "#2f7fd0"
 HOT = "#e8802a"
-BASE_QUICK = "#c3cbd4"
-BASE_SUSTAINED = "#7c8894"
+SIXTEEN = "#7b5ea7"
+BASE = "#9aa4ae"
 
 FONT_PATH = "/System/Library/Fonts/Hiragino Sans GB.ttc"
 
@@ -38,7 +38,7 @@ def font(size, bold=False):
 
 
 def load(name):
-    """Return {(system, scenario): (mean, p95, over_budget_frames, frames)}."""
+    """Return {(system, scenario): (mean, p95, over_budget_frames, frames, budget)}."""
     report = json.loads((REPORTS / f"{name}.json").read_text())
     out = {}
     for case in report["cases"]:
@@ -61,20 +61,21 @@ SCENARIOS = [
     ("NTSC-M", "damaged", "NTSC-M", "损伤"),
 ]
 
+# label, colour, report, annotate the over-budget share
 SERIES = [
-    ("冷机 8 s · mobile＋流水线", COLD, "s3-pipe-a"),
-    ("持续热透 180 s · mobile＋流水线", HOT, "sustained-3stage"),
-    ("优化前 30 s · full＋顺序", BASE_QUICK, "iphone14pro-quick"),
-    ("优化前 180 s · full＋顺序", BASE_SUSTAINED, "iphone14pro-sustained"),
+    ("14 Pro 冷机 8 s · mobile＋流水线", COLD, "s3-pipe-a", False),
+    ("14 Pro 持续 180 s · mobile＋流水线", HOT, "sustained-3stage", True),
+    ("16 Pro 持续 180 s · 旧构建（无流水线）", SIXTEEN, "16pro-sustained-mobile", True),
+    ("14 Pro 优化前 180 s · full＋顺序", BASE, "iphone14pro-sustained", False),
 ]
 
-data = {label: load(name) for label, _, name in SERIES}
+data = {label: load(name) for label, _, name, _ in SERIES}
 
 # ---------------------------------------------------------------- geometry
 PLOT_L, PLOT_R = 120, W - 60
 PLOT_T, PLOT_B = 210, H - 240
 Y_MAX = 85.0
-Y_TICKS = list(range(0, 86, 10))
+Y_TICKS = list(range(0, 81, 10))
 
 image = Image.new("RGB", (W * S, H * S), "#ffffff")
 draw = ImageDraw.Draw(image)
@@ -108,10 +109,10 @@ def dashed(p1, p2, dash, gap, fill, width):
 
 
 # ------------------------------------------------------------------ title
-draw.text((x(PLOT_L), p(46)), "iPhone 14 Pro（A16）每帧墙钟耗时",
+draw.text((x(PLOT_L), p(46)), "iPhone 真机每帧墙钟耗时：14 Pro 与 16 Pro",
           font=font(30, True), fill=INK)
 draw.text((x(PLOT_L), p(100)),
-          "冷机爆发 vs 持续热透 · Release 真机 / iOS 27.0 · 每例 8 / 30 / 180 秒，丢弃 3 个预热帧 · 柱越短越好",
+          "14 Pro = mobile＋三段流水线（冷机 8 s / 热透 180 s）；16 Pro = 旧构建 mobile、无流水线，180 s · 丢弃 3 个预热帧 · 柱越短越好",
           font=font(17), fill=MUTED)
 
 # ------------------------------------------------------------------- grid
@@ -126,14 +127,14 @@ draw.line([(x(PLOT_L), y(0)), (x(PLOT_R), y(0))], fill="#b6bec7", width=2 * S)
 
 # ------------------------------------------------------------------- bars
 slot = (PLOT_R - PLOT_L) / len(SCENARIOS)
-bar_w = 54
+bar_w = 56
 gap = 10
 total_w = len(SERIES) * bar_w + (len(SERIES) - 1) * gap
 
 for index, (system, scenario, sys_label, scen_label) in enumerate(SCENARIOS):
     center = PLOT_L + slot * (index + 0.5)
     left = center - total_w / 2
-    for s_index, (label, colour, _) in enumerate(SERIES):
+    for s_index, (label, colour, _name, annotate) in enumerate(SERIES):
         mean, p95, over, count, _budget = data[label][(system, scenario)]
         bx0 = left + s_index * (bar_w + gap)
         bx1 = bx0 + bar_w
@@ -141,11 +142,10 @@ for index, (system, scenario, sys_label, scen_label) in enumerate(SCENARIOS):
                                radius=4 * S, fill=colour)
         draw.text(((x(bx0) + x(bx1)) / 2, y(mean) - 12 * S), f"{mean:.2f}",
                   font=font(15, True), fill=INK, anchor="mb")
-        if over and "流水线" in label and "冷机" not in label:
+        if annotate and over:
             draw.text(((x(bx0) + x(bx1)) / 2, y(mean) - 36 * S),
                       f"超 {over / count:.0%}", font=font(13, True),
                       fill=BUDGET, anchor="mb")
-    # group label
     draw.text((x(center), y(0) + 16 * S), sys_label,
               font=font(18, True), fill=INK, anchor="ma")
     draw.text((x(center), y(0) + 44 * S), scen_label,
@@ -163,20 +163,20 @@ for span, budget, caption in ((pal_span, pal_budget, f"PAL 预算 {pal_budget:.2
               font=font(15, True), fill=BUDGET, anchor="mb")
 
 # ----------------------------------------------------------------- legend
-legend_y = y(0) + 108 * S
-entries = [(label, colour) for label, colour, _ in SERIES]
+legend_y = y(0) + 112 * S
+entries = [(label, colour) for label, colour, _name, _ in SERIES]
 widths = [draw.textlength(label, font=font(16)) + 46 * S for label, _ in entries]
-total = sum(widths) + 30 * S * (len(entries) - 1)
+total = sum(widths) + 26 * S * (len(entries) - 1)
 cursor = x(W / 2) - total / 2
 for (label, colour), entry_w in zip(entries, widths):
     draw.rounded_rectangle([cursor, legend_y - 11 * S, cursor + 26 * S, legend_y + 5 * S],
                            radius=3 * S, fill=colour)
     draw.text((cursor + 38 * S, legend_y), label, font=font(16), fill=INK, anchor="lm")
-    cursor += entry_w + 30 * S
+    cursor += entry_w + 26 * S
 
 # ---------------------------------------------------------------- footnote
-draw.text((x(PLOT_L), H * S - 54 * S),
-          "数据由 iOS/Reports 的逐帧 JSON 重算：s3-pipe-a / sustained-3stage / iphone14pro-quick / iphone14pro-sustained；"
+draw.text((x(PLOT_L), H * S - 50 * S),
+          "逐帧 JSON 重算：s3-pipe-a / sustained-3stage / 16pro-sustained-mobile / iphone14pro-sustained；"
           "生成脚本 Scripts/plot-iphone14pro.py",
           font=font(13), fill=MUTED)
 

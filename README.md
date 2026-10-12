@@ -139,7 +139,9 @@ RGB → CVBS → 负极性 AM / VSB → 图像与伴音功放 → 线性合成
 
 括号内是超预算帧数。首轮优化把核心链路从 149.15 / 100.53 ms 降到 36.47 / 23.41 ms（约 4.1× / 4.3×），此后维持实时余量。
 
-## iPhone 14 Pro 真机（A16）
+## iPhone 真机实测
+
+### iPhone 14 Pro（A16）
 
 同一台 14 Pro 上，**冷机与热透的差距比任何一次代码改动都大**：冷机时四个场景全部进预算，持续热透后 PAL 损伤会掉到 122%。下面把所有状态并在一张表里，每例 8 / 30 / 180 秒，丢弃 3 个预热帧；括注 P95，`超` 为该场景的超预算帧数。
 
@@ -152,18 +154,30 @@ RGB → CVBS → 负极性 AM / VSB → 图像与伴音功放 → 线性合成
 | 优化前 30 s 快速 · full＋顺序引擎 | 45.96 | 56.93 | 29.19 | 41.69 |
 | 优化前 180 s 持续 · full＋顺序引擎 | 59.46 | 76.78 | 42.46 | 62.88 |
 
-![iPhone 14 Pro 冷机与持续热态的每帧耗时](Assets/iphone14pro-performance.png)
-
 - 冷机两行的超预算帧数都是 0；优化前基线的每个场景都超预算（NTSC 默认快速仅 2/898 帧超）。持续热透下的实际交付速率：PAL 默认 100%、NTSC 默认 100%、NTSC 损伤 98%、PAL 损伤 79%。
 - 冷机爆发与持续热透相差 **2.3 倍**（PAL 损伤 21.4 → 49.0 ms），几乎全部来自降频而不是工作量；持续数字在同一天内也会随设备历史热状态漂移（仅损伤场景的复跑为 33.33 / 31.31 ms），所以持续测的绝对值只能与同一次会话内的配对比较。
 - 上面三档都固定在 **mobile** 档测量；iOS App 在 serious／critical 时会自动切到更省的 `hot` 档，该档尚无真机报告。
 - 原始报告：冷机爆发 [s3-pipe-a.json](iOS/Reports/s3-pipe-a.json)、冷机 30 s [qos-ui-b.json](iOS/Reports/qos-ui-b.json)、持续 180 s [sustained-3stage.json](iOS/Reports/sustained-3stage.json)、仅损伤复跑 [therm-unl-a.json](iOS/Reports/therm-unl-a.json)；优化前基线见 [真机报告](iOS/Reports/iPhone14Pro-results.md)；交错 A/B 与归一见 [流水线与测量记录](iOS/Reports/p2-pipeline.md)。
 
+### iPhone 16 Pro（A18 Pro，旧构建）
+
+16 Pro 只跑过**三段流水线之前的构建**（mobile 档，[热态实时调查](iOS/Reports/thermal-realtime-round2.md) 那一轮），因此下面是**机型对照，不是同版本对照**：同为 180 s 持续，14 Pro 走当前流水线，16 Pro 走旧构建。8 s 那一行整段处于 fair 热态。
+
+| 状态（mobile，无流水线） | PAL-D/K 默认 | PAL-D/K 损伤 | NTSC-M 默认 | NTSC-M 损伤 |
+| --- | ---: | ---: | ---: | ---: |
+| **帧预算** | 40.00 | 40.00 | 33.37 | 33.37 |
+| 冷机 8 s（fair） | 25.75（P95 26.48） | 33.31（P95 34.51） | 19.11（P95 19.95） | 23.85（P95 24.75） |
+| 持续 180 s | 29.83（P95 34.18，超 0/4499） | **49.50**（P95 65.25，超 3289/3289） | 26.28（P95 29.90，超 4/5352） | **34.92**（P95 36.64，超 3525/4138） |
+
+这组对照里 **14 Pro 反而全面更快**（默认场景 26.20 / 19.38 ms 对 16 Pro 的 29.83 / 26.28 ms），但有两个变量同时在变，不能当芯片对比读：14 Pro 用的是三段流水线，而热状态也对 16 Pro 更有利——14 Pro 的 180 s 全程 serious，16 Pro 那次只有 54% 的时间处于 serious（前 46% 是 fair）。能说的只是：**当前代码在 14 Pro 上已经追平甚至超过 16 Pro 的旧构建**。原始数据 [16pro-sustained-mobile.json](iOS/Reports/16pro-sustained-mobile.json)、8 s [16pro-A1-mobile-profile.json](iOS/Reports/16pro-A1-mobile-profile.json)；**16 Pro 尚未用三段流水线复测**。
+
+![iPhone 14 Pro 与 16 Pro 的每帧耗时：冷机、持续热透与优化前基线](Assets/iphone14pro-performance.png)
+
 **没有达标的地方也一并列出**，因为它们界定了当前边界：
 
 - **右侧传播侧栏的三种窗口布局全部失败**（PAL 最慢 43.90 / 65.90 / 59.94 ms，超预算 2 / 3 / 10 帧）。
 - **iPhone 14 Pro**：持续热透下只剩 **PAL 损伤不达标**（48.98 ms，122%）；NTSC 损伤均值 31.91 ms 虽在预算内，但 P95 36.79 ms、29% 的帧超预算。**手机实时依赖热状态，不能用冷机数字承诺长时间播放**。
-- **iPhone 16 Pro**（mobile 档、尚无三段流水线的旧构建，180 s／场景）：PAL 默认均值 29.83 ms、能力 134%、超预算 0；PAL 损伤 49.50 ms、能力 81%；NTSC 默认 26.28 ms（超 4 帧）；**NTSC 损伤 34.92 ms，超预算 85%**。同一构建下 14 Pro 的数字见上表；16 Pro 尚未用三段流水线复测。
+- **iPhone 16 Pro**（旧构建）：两个损伤场景都不达标（PAL 损伤 49.50 ms，全部帧超预算；NTSC 损伤 34.92 ms，85% 超预算），见上一节。
 
 ## 档位：Full / Fast / hot
 
