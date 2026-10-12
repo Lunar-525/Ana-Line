@@ -396,3 +396,38 @@ private extension TerrestrialSettings {
     /// The channel grid rate used by the validation tests.
     var rateValidationRate: Double { TerrestrialSystem.palDK.video.sampleRate }
 }
+
+// MARK: - Resampler accumulation diagnostic
+
+extension TVMobileProfileTests {
+    /// Prints the companion resampler cost. Diagnostic only: the resampler's
+    /// tap sum is a chain of dependent float adds, so this is where an
+    /// instruction-level-parallelism fix shows up.
+    func testResamplerAccumulationTiming() {
+        for system in TerrestrialSystem.allCases {
+            let clock = TVChannelClock(system: system,sampleRate: system.video.sampleRate)
+            let count = clock.count(frame: 0)
+            var i = [Float](repeating: 0,count: 4_096), q = i
+            for n in 0..<4_096 {
+                let phase = 2*Double.pi*100_000*Double(n)/384_000
+                i[n] = Float(cos(phase)); q[n] = Float(sin(phase))
+            }
+            func cost(single: Bool) -> Double {
+                var resampler = TVComplexResampler(inputRate: 384_000,outputRate: system.video.sampleRate,
+                                                   radius: 6,phases: 512,
+                                                   singlePrecisionAccumulation: single)
+                _ = resampler.process(i: i,q: q,inputStart: 0,outputStart: 0,outputCount: count)
+                var best = Double.greatestFiniteMagnitude
+                for _ in 0..<5 {
+                    let start = ContinuousClock.now
+                    _ = resampler.process(i: i,q: q,inputStart: 0,outputStart: 0,outputCount: count)
+                    let d = start.duration(to: .now).components
+                    best = min(best,Double(d.seconds)+Double(d.attoseconds)/1e18)
+                }
+                return best*1000
+            }
+            print(String(format:"resampler %@ radius6 samples=%d single=%.3f ms double=%.3f ms",
+                         system.rawValue,count,cost(single: true),cost(single: false)))
+        }
+    }
+}

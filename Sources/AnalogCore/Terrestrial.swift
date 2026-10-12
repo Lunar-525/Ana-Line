@@ -146,6 +146,17 @@ public struct TerrestrialReception: Sendable {
     public var inputPowerDB: Float = 0
     /// Unsmoothed vision-gain target measured this frame, for block feedback.
     public var agcTargetDB: Float = 0
+    /// Identity of the frame this reception committed, and how it related to the
+    /// previous one. A forward gap is a legitimate seek; a repeat or rewind is
+    /// refused before it can reach this point.
+    public var frameIdentity: TVFrameIdentity?
+    public var frameContinuity: TVFrameContinuity = .first
+    /// Carrier-recovery strategy actually used this frame. These are the values
+    /// that decide the receiver's cost under damage, so they belong in the
+    /// telemetry rather than only in the receiver's private state.
+    public var carrierTracked = false
+    public var carrierEstimationDecimation = 1
+    public var carrierPLLStrideUsed = 1
 }
 
 /// A causal, streaming FIR. State survives block boundaries, including between frames.
@@ -157,7 +168,7 @@ struct TelevisionFIR: Sendable {
         guard !input.isEmpty else { return [] }
         let joined = history + input
         let reversed = Array(kernel.reversed())
-        var output = [Float](repeating: 0, count: input.count)
+        var output = uninitializedFloats(input.count)
         joined.withUnsafeBufferPointer { x in
             reversed.withUnsafeBufferPointer { k in
                 output.withUnsafeMutableBufferPointer { y in
@@ -180,7 +191,7 @@ struct TelevisionFIR: Sendable {
         guard !input.isEmpty else { return [] }
         let joined = history + input, reversed = Array(kernel.reversed())
         let count = (input.count-phase+factor-1)/factor
-        var output = [Float](repeating: 0,count: count)
+        var output = uninitializedFloats(count)
         joined.withUnsafeBufferPointer { x in reversed.withUnsafeBufferPointer { k in
             output.withUnsafeMutableBufferPointer { y in
                 vDSP_desamp(x.baseAddress!+phase,vDSP_Stride(factor),k.baseAddress!,y.baseAddress!,
@@ -192,8 +203,11 @@ struct TelevisionFIR: Sendable {
     }
     static func together(_ filters: [TelevisionFIR], inputs: [[Float]], execution: TVExecution) -> ([TelevisionFIR], [[Float]]) {
         let work = zip(filters,inputs).map { TelevisionFilterWork(filter: $0.0,input: $0.1) }
-        if execution == .accelerated {
-            DispatchQueue.concurrentPerform(iterations: work.count) { work[$0].run(chunks: 2) }
+        // The diagnostic ceiling covers this fan-out too, so a sweep to one
+        // worker really is a serial baseline.
+        let workers = cappedWorkers(work.count)
+        if execution == .accelerated, workers > 1 {
+            DispatchQueue.concurrentPerform(iterations: workers) { work[$0].run(chunks: 2) }
         } else { for item in work { item.run() } }
         return (work.map { $0.filter },work.map { $0.output })
     }
@@ -394,7 +408,7 @@ public struct VSBModulator: Sendable {
                 }
             }
         }
-        var envelope = [Float](repeating: 0,count: voltage.count)
+        var envelope = uninitializedFloats(voltage.count)
         var slope: Float = -0.875, pedestal: Float = 0.7375
         vDSP_vsmsa(voltage,1,&slope,&pedestal,&envelope,1,vDSP_Length(voltage.count))
         var minimum: Float = 0
@@ -443,7 +457,7 @@ public struct TerrestrialRFChannel: Sendable {
         let cp = Float(cos(phase)), sp = Float(sin(phase))
         let densityScale = Float(sqrt(rate / (noiseReferenceRate ?? rate)))
         let noise = Float(0.7375 / sqrt(2.0)) * pow(10, -settings.carrierToNoiseDB / 20) * densityScale * scene.noiseScale(settings.propagation)
-        var re = [Float](repeating: 0, count: i.count), im = re
+        var re = uninitializedFloats(i.count), im = uninitializedFloats(i.count)
         if settings.execution == .reference {
             for n in re.indices {
                 let p = Double(prefix + n) - delay, j = Int(floor(p)), f = Float(p - floor(p))
@@ -457,7 +471,7 @@ public struct TerrestrialRFChannel: Sendable {
                 im[n] = gain * (q[n] + settings.echoGain*(a*sp+b*cp)) + radius*sin(angle)
             }
         } else {
-            var radii = [Float](repeating: 0,count: re.count), angles = radii
+            var radii = uninitializedFloats(re.count), angles = uninitializedFloats(re.count)
             let seed = rng, sampleCount = re.count
             if settings.performance.noiseGenerator == .parallelBoxMuller {
                 // Independent streams over disjoint ranges, evaluated concurrently.
@@ -591,9 +605,14 @@ public struct TerrestrialReceiver: Sendable {
     private var videoLowpassRate: Double = 0
     private var carrierPhase = 0.0
     private(set) var carrierFrequency = 0.0
-    /// True while the previous frame captured the vision carrier comfortably
-    /// inside the AFC capture range. Drives the reduced-rate carrier estimate.
+    /// True while the previous frame actually locked the vision carrier.
     private var carrierTracked = false
+    /// Frames since the receiver last locked. Drives the middle tier of the
+    /// carrier policy: dense while a dropout could still be transient, reduced
+    /// again once the channel has been noise long enough that a full-rate search
+    /// cannot succeed any sooner. It starts at zero, so a fresh engine acquires
+    /// on the dense path before it is allowed to reduce anything.
+    private var framesSinceLock = 0
     /// Carrier-estimation decimation actually used by the last frame. Diagnostics
     /// only: 1 means the full-rate estimate ran.
     private(set) var carrierEstimationDecimation = 1
@@ -646,6 +665,14 @@ public struct TerrestrialReceiver: Sendable {
         try receiveWithFrontEnd(input, settings: settings).0
     }
 
+    /// Detect a record whose shared front end has already run. The caller owns the
+    /// front end, which is what lets a pipeline keep the front end and detection on
+    /// different frames: the state the two passes touch is disjoint.
+    public mutating func receiveDetected(_ front: TVFrontEndOutput, settings: TerrestrialSettings,
+                                         started: ContinuousClock.Instant) throws -> TerrestrialReception {
+        try detect(front, settings: settings, started: started)
+    }
+
     /// Same as receive(_:settings:) but also returns the shared front-end output,
     /// so a companion carrier can be extracted from the same receiver pass.
     mutating func receiveWithFrontEnd(_ input: TVChannelIQ, settings: TerrestrialSettings) throws -> (TerrestrialReception, TVFrontEndOutput) {
@@ -662,7 +689,7 @@ public struct TerrestrialReceiver: Sendable {
     /// is exactly the original full-rate vector phase.
     private static func sampledPhases(i: [Float], q: [Float], stride: Int) -> [Float] {
         let count = (i.count+stride-1)/stride
-        var phases = [Float](repeating: 0,count: count)
+        var phases = uninitializedFloats(count)
         guard count > 0 else { return phases }
         var length = Int32(count)
         if stride == 1 {
@@ -673,7 +700,7 @@ public struct TerrestrialReceiver: Sendable {
             } }
             return phases
         }
-        var real = [Float](repeating: 0,count: count), imaginary = real
+        var real = uninitializedFloats(count), imaginary = uninitializedFloats(count)
         i.withUnsafeBufferPointer { x in real.withUnsafeMutableBufferPointer { r in
             let source = x.baseAddress!, target = r.baseAddress!
             for j in 0..<count { target[j] = source[j*stride] }
@@ -700,6 +727,16 @@ public struct TerrestrialReceiver: Sendable {
         let spectrum = front.spectrum
         let frameIndex = front.frameIndex
         let tuned = ContinuousClock.now
+        let estimationInterval = TVSignpost.begin(.carrierEstimation)
+        // Carrier policy, decided from the state on entry, before this frame's
+        // capture result is known:
+        //   locked              -> reduced rate: the receiver is receiving
+        //   recently locked     -> dense: a dropout may still be transient
+        //   lost for a while    -> reduced again: a full-rate search over a
+        //                          channel that has been noise for many frames
+        //                          cannot succeed any sooner, so it only costs
+        let trackedOnEntry = carrierTracked
+        let reducedRate = trackedOnEntry || framesSinceLock >= settings.performance.sustainedLossFrames
         // Coarse AFC uses measured, unwrapped phase; it does not read transmitter
         // frequency or synchronization metadata. Capture range is deliberately finite.
         let acquisitionStart = min(2048, count/4)
@@ -718,7 +755,7 @@ public struct TerrestrialReceiver: Sendable {
         // carrier estimate on a decimated grid instead of every RF sample.
         // Acquisition, loss of lock and drift towards the capture edge all use
         // the full-rate estimate.
-        let afcDecimation = carrierTracked
+        let afcDecimation = reducedRate
             ? max(1,min(settings.performance.afcLockedDecimation,max(1,count/4))) : 1
         carrierEstimationDecimation = afcDecimation
         let carrierFiltered: ([TelevisionFIR], [[Float]])
@@ -748,14 +785,14 @@ public struct TerrestrialReceiver: Sendable {
         // profile asks for it; the oscillator itself still advances per sample.
         // Acquisition and loss of lock always use the dense per-sample feedback.
         let pllStride = vectorAngles
-            ? max(1,min(carrierTracked ? settings.performance.carrierPLLStride : 1,count)) : 1
+            ? max(1,min(reducedRate ? settings.performance.carrierPLLStride : 1,count)) : 1
         carrierPLLStrideUsed = pllStride
         let angles = vectorAngles ? Self.sampledPhases(i: re,q: im,stride: pllStride) : []
         var winding = 0.0, totalPower = 0.0
         if vectorAngles {
             // Adjacent measured phase differences and powers are independent.
             // Each worker owns its accumulator; carrier PLL feedback stays serial.
-            var carrierAngles = [Float](repeating: 0,count: carrierCount)
+            var carrierAngles = uninitializedFloats(carrierCount)
             var carrierLength = Int32(carrierCount)
             carrierI.withUnsafeBufferPointer { x in
                 carrierQ.withUnsafeBufferPointer { y in
@@ -785,14 +822,19 @@ public struct TerrestrialReceiver: Sendable {
         let measured = winding * carrierRate / (2 * .pi * Double(max(1,carrierCount-carrierStart-1)))
         let carrierPresent = totalPower / Double(carrierCount) > 1e-10
         let captured = carrierPresent && abs(measured) < 150_000
-        // Only track the reduced-rate estimate while the carrier sits comfortably
-        // inside the capture range; acquisition and any drift towards the edge
-        // fall back to the full-rate estimate on the next frame.
-        carrierTracked = captured && abs(measured) < 100_000
+        // `carrierTracked` is set below from whether the receiver actually
+        // locked, not from a frequency-margin proxy. The margin rule was wrong in
+        // both directions: a locked carrier sitting near the capture edge kept the
+        // full-rate path (measured +30% on PAL), while a noise-only channel with
+        // plausible power kept the reduced-rate path (measured 0 lock yet 100%
+        // reduced). The reduced-rate strategy is only safe once the receiver is
+        // demonstrably receiving.
         carrierFrequency = settings.automaticFineTuning && captured ? measured : 0
         let estimated = ContinuousClock.now
+        TVSignpost.end(.carrierEstimation, estimationInterval)
+        let pllInterval = TVSignpost.begin(.carrierPLL)
         let omega = 2 * Double.pi * carrierFrequency / rate
-        var demod = [Float](repeating: 0, count: count)
+        var demod = uninitializedFloats(count)
         // Narrow carrier PLL rejects most video modulation while following phase drift.
         let loopGain = 2 * Double.pi * 800 / rate
         var pllCorrection = 0.0
@@ -807,7 +849,7 @@ public struct TerrestrialReceiver: Sendable {
             // changes how many measured errors per frame the loop consumes; the
             // oscillator still advances by omega plus the held correction on
             // every sample, so the loop bandwidth is unchanged.
-            var phases = [Float](repeating: 0,count: count)
+            var phases = uninitializedFloats(count)
             let initialPhase = carrierPhase
             let phaseState = re.withUnsafeBufferPointer { rp in
                 im.withUnsafeBufferPointer { ip in
@@ -838,7 +880,7 @@ public struct TerrestrialReceiver: Sendable {
                 }
             }
             pllCorrection = phaseState.1
-            var sine = [Float](repeating: 0,count: count)
+            var sine = uninitializedFloats(count)
             if settings.performance != .full {
                 // Oscillator synthesis and coherent detection are elementwise, so
                 // splitting the frame across workers cannot change one output
@@ -909,6 +951,8 @@ public struct TerrestrialReceiver: Sendable {
             carrierPhase = atan2(oscillatorQ,oscillatorI)
         }
         let carrierRecovered = ContinuousClock.now
+        TVSignpost.end(.carrierPLL, pllInterval)
+        let detectionInterval = TVSignpost.begin(.detection)
         // Notch the companion carrier before AGC and sync. A wide vision IF keeps
         // the +4.5/+6.5 MHz sound carrier, whose beat otherwise corrupts the
         // sync-tip quantile and the slicer. State persists across the session.
@@ -966,7 +1010,7 @@ public struct TerrestrialReceiver: Sendable {
         let reconstructionGain = settings.frontEnd.agcEnabled ? 1 : gain
         var voltage: [Float]
         if settings.execution == .accelerated {
-            voltage = [Float](repeating: 0,count: count)
+            voltage = uninitializedFloats(count)
             var scale = -reconstructionGain/0.875, offset: Float = 0.7375/0.875
             vDSP_vsmsa(demod,1,&scale,&offset,&voltage,1,vDSP_Length(count))
         } else { voltage = demod.map { (0.7375 - $0*reconstructionGain) / 0.875 } }
@@ -1017,6 +1061,9 @@ public struct TerrestrialReceiver: Sendable {
             confidence = Float(matches)/Float(s.height)
         }
         let good = captured && (settings.automaticFineTuning || abs(measured) < 1500) && confidence > 0.65
+        // The decisions on the next frame follow this frame's real lock state.
+        carrierTracked = good
+        framesSinceLock = good ? 0 : min(framesSinceLock &+ 1, 1_000_000)
         var lock: TelevisionLock
         if good, let origin { lastOrigin = origin; holdFrames = 0; lock = .locked }
         else if lastOrigin != nil, holdFrames < 3 { holdFrames += 1; lock = .holding }
@@ -1063,6 +1110,8 @@ public struct TerrestrialReceiver: Sendable {
         let timing = raster.0
         let composite = try CompositeVideo(standard: s, frameIndex: frameIndex, samples: voltage)
         let synchronized = ContinuousClock.now
+        TVSignpost.end(.detection, detectionInterval)
+        let decodeInterval = TVSignpost.begin(.decode)
         var decoded = try TVEngine.decode(composite, settings: settings.decoder, timing: timing, execution: settings.execution)
         if system == .ntscM {
             // Undo the broadcast pedestal after Y/C decoding (equal offset in R,G,B).
@@ -1090,6 +1139,12 @@ public struct TerrestrialReceiver: Sendable {
         reception.timings.carrierPLL = TerrestrialTimings.seconds(estimated.duration(to: carrierRecovered))
         reception.timings.synchronization = TerrestrialTimings.seconds(carrierRecovered.duration(to: synchronized))
         reception.timings.videoDecode = TerrestrialTimings.seconds(synchronized.duration(to: .now))
+        TVSignpost.end(.decode, decodeInterval)
+        // The carrier strategy is what makes a damaged frame expensive, so it is
+        // reported rather than left in private receiver state.
+        reception.carrierTracked = carrierTracked
+        reception.carrierEstimationDecimation = carrierEstimationDecimation
+        reception.carrierPLLStrideUsed = carrierPLLStrideUsed
         return reception
     }
 }

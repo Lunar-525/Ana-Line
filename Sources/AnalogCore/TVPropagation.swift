@@ -214,7 +214,7 @@ struct TVSceneChannel: Sendable {
             let phase = -2*Double.pi*f*delay+2*Double.pi*0.07*time
             rays.append((delay*rate,Float(report.clutterAmplitude*distanceScale),phase,0.07))
         }
-        var re = [Float](repeating: 0,count: i.count), im = re
+        var re = uninitializedFloats(i.count), im = uninitializedFloats(i.count)
         var scale = direct
         vDSP_vsmul(i,1,&scale,&re,1,vDSP_Length(i.count)); vDSP_vsmul(q,1,&scale,&im,1,vDSP_Length(q.count))
         if !rays.isEmpty {

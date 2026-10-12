@@ -166,7 +166,7 @@ struct TVTransmitterAmplifier: Sendable {
             realFilter = TelevisionFIR(kernel); imaginaryFilter = TelevisionFIR(kernel)
             filterRadius = antialiasRadius
         }
-        var re = [Float](repeating: 0,count: i.count*2), im = re
+        var re = uninitializedFloats(i.count*2), im = uninitializedFloats(i.count*2)
         let count = i.count, initial = previous
         let workers = execution == .accelerated ? cappedWorkers(min(8,max(1,count/32_768))) : 1
         let tableSpan = Double(points), tableSpanF = Float(points)

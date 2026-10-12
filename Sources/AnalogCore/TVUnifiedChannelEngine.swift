@@ -1,43 +1,67 @@
 import Foundation
 
-/// End-to-end unified channel. Vision VSB and mono FM sound are combined onto
-/// one 4fsc IQ record, propagated once, and received through one shared front
-/// end. Vision detection and sound extraction then observe the same receiver
-/// pass, so common noise, echoes and tuning affect both branches together.
+/// End-to-end unified channel, composed of a transmit half and a receive half.
 ///
-/// This path is additive: TerrestrialEngine remains the legacy reference that
-/// runs two independent narrowband branches. Common-PA nonlinearity is not yet
-/// modelled here; the first combined version is linear for reference comparison.
+/// Vision VSB and mono FM sound are combined onto one 4fsc IQ record, propagated
+/// once, and received through one shared front end, so common noise, echoes and
+/// tuning affect both branches together. The two halves own disjoint state; the
+/// only thing that crosses between them is the shared front-end gain, which the
+/// receiver measures and the next frame's transmit pass consumes. That coupling is
+/// held here, at the frame boundary, instead of being hidden inside either half.
+///
+/// This path is additive: TerrestrialEngine remains the legacy reference that runs
+/// two independent narrowband branches.
 public struct TVUnifiedChannelEngine: Sendable {
     public let system: TerrestrialSystem
-    static let soundRate = 384_000
-    private var visionModulator: VSBModulator
-    private var soundModulator: TVSoundModulator
-    private var combiner: TVChannelModulator
-    private var channel: TerrestrialRFChannel
-    private var receiver: TerrestrialReceiver
-    private var visionAmplifier = TVTransmitterAmplifier()
-    private var soundAmplifier = TVTransmitterAmplifier()
-    private var extractor: TVSoundExtractor
-    private var extractorMode: TVSoundDetectionMode = .splitSound
-    private var demodulator: TVSoundDemodulator
+    private var transmit: TVTransmitChain
+    private var receive: TVReceiveChain
+    /// Shared front-end gain: written from the receiver's measurement at the end
+    /// of a frame, read by the transmit pass of the next frame.
     private var commonGain: Float = 1
-    private let soundSpectrumAnalyzer = TVSpectrumAnalyzer(log2Size: 9)
 
     public init(system: TerrestrialSystem, seed: UInt64 = 42) {
         self.system = system
-        visionModulator = VSBModulator(system: system)
-        soundModulator = TVSoundModulator(system: system)
-        combiner = TVChannelModulator(system: system)
-        channel = TerrestrialRFChannel(seed: seed)
-        receiver = TerrestrialReceiver(system: system)
-        extractor = TVSoundExtractor(system: system, outputRate: Double(Self.soundRate))
-        demodulator = TVSoundDemodulator(system: system, projectFrontEnd: false)
+        transmit = TVTransmitChain(system: system, seed: seed)
+        receive = TVReceiveChain(system: system)
     }
 
+    /// Committed progress of every stage that has run. The engine is its only
+    /// writer, and it writes only for frames that ran to completion.
+    public private(set) var progress = TVProgressLedger()
+    /// Refuse a repeated or rewound frame instead of recording it. Off by
+    /// default: the player deliberately re-runs a frame to settle the loops, and
+    /// strictness is for callers that can guarantee a monotonic frame sequence.
+    public var strictFrameOrder = false
+
+    @discardableResult
+    private mutating func commit(_ stage: TVStage, _ identity: TVFrameIdentity) throws -> TVFrameContinuity {
+        let verdict = progress.advance(stage, to: identity)
+        if verdict.isViolation, strictFrameOrder { throw TVError.outOfOrderFrame }
+        return verdict
+    }
+
+    /// Identity of a frame on its own sample grid.
+    static func identity(of input: CompositeVideo) -> TVFrameIdentity {
+        TVFrameIdentity(frameIndex: input.frameIndex,
+                        sampleStart: input.standard.sampleOffset(frame: input.frameIndex),
+                        sampleCount: input.samples.count)
+    }
+
+    /// Process one frame atomically. Every stage mutates a candidate copy of the
+    /// engine; only a frame that runs to completion replaces the live state, so a
+    /// failure cannot leave a recursive stage advanced past its own output.
     public mutating func process(_ input: CompositeVideo, settings: TerrestrialSettings,
                                  audio: [Float]? = nil) throws -> TerrestrialReception {
-        let start = ContinuousClock.now
+        var candidate = self
+        let result = try candidate.processFrame(input, settings: settings, audio: audio)
+        self = candidate
+        return result
+    }
+
+    /// Frame prologue: apply the shared gain the receiver measured last frame and
+    /// run every check that can fail, before any state is touched.
+    private func prepare(_ input: CompositeVideo, settings: TerrestrialSettings,
+                         audio: [Float]?) throws -> TerrestrialSettings {
         var settings = settings
         if settings.frontEnd.agcEnabled {
             // Block feedback: the previous frame's measured target sets the
@@ -52,112 +76,65 @@ public struct TVUnifiedChannelEngine: Sendable {
                 throw TVError.invalidSignal
             }
         }
-        // Vision branch: CVBS -> VSB -> drive -> separate vision PA.
-        var vision = try visionModulator.modulate(input, execution: settings.execution, filter: settings.transmitter.vsb)
-        TVTransmitterSettings.drive(i: &vision.i,q: &vision.q,settings: settings.transmitter)
-        // In-band cross compression still reads the measured vision envelope.
-        var visionPower: [Float] = []
-        if audio != nil, settings.transmitter.enabled, settings.transmitter.sharedCoupling > 0 {
-            let cells = TVSoundClock.count(frame: input.frameIndex,standard: input.standard,rate: Self.soundRate)
-            // The cross-compression envelope is a companion-rate cell average.
-            // The profile may estimate it from a sub-sample stride; at stride 1
-            // this averages exactly the samples the cell spans.
-            let step = max(1,settings.performance.amplifierCouplingStride)
-            visionPower = vision.i.withUnsafeBufferPointer { ip in vision.q.withUnsafeBufferPointer { qp in
-                [Float](unsafeUninitializedCapacity: cells) { output,initialized in
-                    let i = ip.baseAddress!, q = qp.baseAddress!, target = output.baseAddress!, count = ip.count
-                    for cell in 0..<cells {
-                        let a = cell*count/cells, b = (cell+1)*count/cells
-                        var sum: Float = 0, samples = 0
-                        for n in stride(from: a,to: b,by: step) { sum += i[n]*i[n]+q[n]*q[n]; samples += 1 }
-                        target.advanced(by: cell).initialize(to: sum/Float(max(1,samples)))
-                    }
-                    initialized = cells
-                }
-            } }
-        }
-        (vision.i,vision.q) = visionAmplifier.apply(i: vision.i,q: vision.q,settings: settings.transmitter,
-            execution: settings.execution,otherPower: visionPower.isEmpty ? [] : [0.1*settings.transmitter.powerGain],
-            profile: settings.performance)
-        var forward = visionAmplifier.meanOutputPower
-        var overmodulated = visionModulator.overmodulated
-        // Sound branch: PCM -> FM -> separate sound PA, still narrowband.
-        var soundSignal: TVSoundIQ?
-        if let audio {
-            var sound = soundModulator.modulate(audio,frameIndex: input.frameIndex,settings: settings,
-                                                rate: Double(Self.soundRate))
-            (sound.i,sound.q) = soundAmplifier.apply(i: sound.i,q: sound.q,settings: settings.transmitter,
-                execution: settings.execution,otherPower: visionPower,profile: settings.performance)
-            forward += soundAmplifier.meanOutputPower
-            overmodulated = overmodulated || soundModulator.overmodulated
-            soundSignal = sound
-        }
-        // Linear combine, then one feedline mismatch on the combined output.
-        let combiningStarted = ContinuousClock.now
-        var combined = try combiner.combine(vision: vision,sound: soundSignal,profile: settings.performance)
-        TVTransmitterSettings.deliver(i: &combined.i,q: &combined.q,settings: settings.transmitter)
-        let modulated = ContinuousClock.now
-        let combinationSeconds = TerrestrialTimings.seconds(combiningStarted.duration(to: modulated))
-        let transmitted = try channel.transmit(combined, settings: settings)
-        let channelDone = ContinuousClock.now
-        // One shared receiver pass feeds both vision detection and sound extraction.
-        let reception = try receiver.receiveWithFrontEnd(transmitted, settings: settings)
-        var result = reception.0
-        if settings.frontEnd.agcEnabled && settings.automaticGain {
-            // The detector measured the target for the gain already applied, so
-            // the update is multiplicative: g <- g * target.
-            let target = pow(Float(10),reception.0.agcTargetDB/20)
+        return settings
+    }
+
+    /// Block feedback for the next frame: the receiver measured the target for the
+    /// gain already applied, so the update is multiplicative, g <- g * target.
+    private mutating func updateSharedGain(_ reception: TerrestrialReception, settings: TerrestrialSettings) {
+        guard settings.frontEnd.agcEnabled else { return }
+        if settings.automaticGain {
+            let target = pow(Float(10),reception.agcTargetDB/20)
             commonGain = max(0.1,min(10000,commonGain*target))
-        } else if settings.frontEnd.agcEnabled {
+        } else {
             commonGain = pow(10,settings.manualGainDB/20)
         }
+    }
+
+    private mutating func processFrame(_ input: CompositeVideo, settings originalSettings: TerrestrialSettings,
+                                       audio: [Float]? = nil) throws -> TerrestrialReception {
+        let identity = Self.identity(of: input)
+        let start = ContinuousClock.now
+        let settings = try prepare(input, settings: originalSettings, audio: audio)
+
+        let transmission = try transmit.transmit(input, settings: settings, audio: audio, measuringFrom: start)
+        let continuity = try commit(.modulation, identity)
+        try commit(.combination, identity)
+        try TVProcessDiagnostics.check(.afterModulation)
+        try commit(.channel, identity)
+        try TVProcessDiagnostics.check(.afterChannel)
+
+        // One shared receiver pass feeds both vision detection and sound extraction.
+        var result = try receive.receive(transmission.channel, frameIndex: input.frameIndex,
+                                         settings: settings, audio: audio)
+        // The receiver runs carrier estimation, the PLL, detection and decode in
+        // one call, so all four stages completed when it returns.
+        try commit(.frontEnd, identity)
+        try commit(.carrierEstimation, identity)
+        try commit(.carrierPLL, identity)
+        try commit(.detection, identity)
+        try commit(.decode, identity)
+        try TVProcessDiagnostics.check(.afterFrontEnd)
+        updateSharedGain(result, settings: settings)
         result.lightningEvents = TVLightningTimeline.events(
             time: Double(input.frameIndex)*input.standard.frameDuration,
             duration: Double(input.samples.count)/input.standard.sampleRate,
             seed: settings.seed,settings: settings.propagation)
-        result.transmitter.forwardPower = forward
+        result.transmitter.forwardPower = transmission.forwardPower
         result.transmitter.referencePower = audio != nil ? 1.1 : 1
-        result.transmitter.saturated = settings.transmitter.enabled
-            && (visionAmplifier.peakDrivePower >= pow(10,settings.transmitter.backoffDB/10)
-                || (audio != nil && soundAmplifier.peakDrivePower >= pow(10,settings.transmitter.backoffDB/10)))
-        result.transmitter.overmodulated = overmodulated
-        result.timings.channelCombination = combinationSeconds
-        result.timings.modulation = TerrestrialTimings.seconds(start.duration(to: modulated))
-        result.timings.channel = TerrestrialTimings.seconds(modulated.duration(to: channelDone))
+        result.transmitter.saturated = transmission.saturated
+        result.transmitter.overmodulated = transmission.overmodulated
+        result.timings.channelCombination = transmission.combinationSeconds
+        result.timings.modulation = transmission.modulationSeconds
+        result.timings.channel = transmission.channelSeconds
         if audio != nil {
-            // Recover the companion carrier from the shared receiver pass. Split
-            // Sound selects it from the IF; Intercarrier takes the beat from the
-            // detected video, where a common tuning error has already cancelled.
-            if extractorMode != settings.frontEnd.soundDetection {
-                extractor.reset(); extractorMode = settings.frontEnd.soundDetection
-            }
-            let extractingStarted = ContinuousClock.now
-            let extracted: TVSoundIQ
-            switch settings.frontEnd.soundDetection {
-            case .intercarrier:
-                extracted = extractor.extractIntercarrier(receiver.detectedVideo,frameIndex: input.frameIndex,
-                    firstSampleIndex: system.video.sampleOffset(frame: input.frameIndex),
-                    sampleRate: system.video.sampleRate,carrierHz: system.soundCarrierHz,
-                    profile: settings.performance)
-            case .splitSound:
-                let shift = system.soundCarrierHz-Double(settings.tuningOffsetKHz)*1000
-                extracted = extractor.extract(i: reception.1.i,q: reception.1.q,frameIndex: input.frameIndex,
-                    firstSampleIndex: reception.1.firstSampleIndex,sampleRate: reception.1.sampleRate,shiftHz: shift,
-                    profile: settings.performance)
-            }
-            result.timings.soundExtraction = TerrestrialTimings.seconds(extractingStarted.duration(to: .now))
-            // With common front-end AGC the gain is already in the shared IQ.
-            let recoveryGain: Float = settings.frontEnd.agcEnabled ? 1 : receiver.currentGain
-            let recovered = demodulator.demodulate(extracted,settings: settings,visionCorrectionHz: 0,
-                                                   receiverGain: recoveryGain)
-            result.audio = recovered.samples
-            result.soundCarrierDB = recovered.carrierDB
-            result.soundSeconds = recovered.seconds
-            result.soundSpectrum = soundSpectrumAnalyzer.analyze(i: extracted.i,q: extracted.q,
-                rate: extracted.sampleRate,centerHz: system.soundCarrierHz,
-                windows: settings.performance.spectrumWindows)
+            try commit(.sound, identity)
+            try TVProcessDiagnostics.check(.afterSound)
         }
         result.transmitter.reflectedPower = result.transmitter.forwardPower*settings.transmitter.reflectedFraction
+        try TVProcessDiagnostics.check(.beforeCommit)
+        result.frameIdentity = identity
+        result.frameContinuity = continuity
         return result
     }
 }

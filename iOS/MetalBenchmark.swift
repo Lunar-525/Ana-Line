@@ -85,6 +85,7 @@ enum MetalBenchmark {
             let reference = TelevisionFIR.together([TelevisionFIR(kernel),TelevisionFIR(kernel)],
                                                   inputs: [i,q],execution: .accelerated).1
             let gpu = best { _ = bank.process(planes: [i,q]) }
+            bank.reset()
             let actual = bank.process(planes: [i,q]) ?? []
             results.append(MetalKernelMeasurement(system: label,kernel: "complexFIR 2x97",samples: count,
                 cpuMS: cpu,gpuMS: gpu,
@@ -95,16 +96,22 @@ enum MetalBenchmark {
         // 2. Complex rotation, as the tuner and the companion shift use it.
         let step = -2 * Double.pi * 20_000 / system.video.sampleRate
         var cpuOutI = [Float](repeating: 0,count: count), cpuOutQ = cpuOutI
+        // Same parallel split the tuner and the companion shift use: disjoint
+        // output ranges, each worker restarting from its exact phase.
+        let ncoWorkers = min(8,max(1,count/65_536))
         let cpu = best {
-            var x = 1.0, y = 0.0
-            let dc = cos(step), ds = sin(step)
             i.withUnsafeBufferPointer { ip in q.withUnsafeBufferPointer { qp in
                 cpuOutI.withUnsafeMutableBufferPointer { op in cpuOutQ.withUnsafeMutableBufferPointer { oq in
                     let a = ip.baseAddress!, b = qp.baseAddress!, r = op.baseAddress!, s = oq.baseAddress!
-                    for n in 0..<count {
-                        r[n] = a[n]*Float(x)-b[n]*Float(y); s[n] = a[n]*Float(y)+b[n]*Float(x)
-                        let next = x*dc-y*ds; y = x*ds+y*dc; x = next
-                        if n & 1023 == 0 { let norm = hypot(x,y); x /= norm; y /= norm }
+                    DispatchQueue.concurrentPerform(iterations: ncoWorkers) { worker in
+                        let lower = worker*count/ncoWorkers, upper = (worker+1)*count/ncoWorkers
+                        var x = cos(step*Double(lower)), y = sin(step*Double(lower))
+                        let dc = cos(step), ds = sin(step)
+                        for n in lower..<upper {
+                            r[n] = a[n]*Float(x)-b[n]*Float(y); s[n] = a[n]*Float(y)+b[n]*Float(x)
+                            let next = x*dc-y*ds; y = x*ds+y*dc; x = next
+                            if n & 1023 == 0 { let norm = hypot(x,y); x /= norm; y /= norm }
+                        }
                     }
                 } }
             } }
@@ -114,7 +121,7 @@ enum MetalBenchmark {
         results.append(MetalKernelMeasurement(system: label,kernel: "ncoMix",samples: count,
             cpuMS: cpu,gpuMS: gpu,
             maxError: gpuResult.map { error(cpuOutI,cpuOutQ,$0.i,$0.q) } ?? .infinity,
-            note: "CPU arm is single-threaded; the chain runs it across workers"))
+            note: "both arms parallel over the same sample count"))
 
         // 3. Transmitter PA: curve lookup, 2x interpolation and the anti-alias
         // decimation, which the CPU path materialises as two 2x arrays.

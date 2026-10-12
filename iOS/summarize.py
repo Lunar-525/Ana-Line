@@ -28,15 +28,16 @@ def thermal_name(state: int) -> str:
 
 print(f"Device: {report['hardware']} | {report['os']} | schema={report.get('schemaVersion')} | "
       f"started={report.get('startedAt')}")
-print(f"Profile: {report.get('chainProfile', '?')} | workers={report.get('parallelWorkers', '?')} | "
+print(f"Profile: {report.get('chainProfile', '?')} | regime={report.get('regime', '-')} | "
+      f"workers={report.get('parallelWorkers', '?')} | "
       f"qos={report.get('dspQoS', '?')} | variant={report.get('optimizationVariant', '?')} | "
       f"completed={report['completed']}")
 if report.get('failure'):
     print('Failure:', report['failure'])
 
 print()
-print('| System / scenario | Frames | Mean ms | P50 | P95 | Peak | Rate mean | Rate P95 | Delivered | Lag ms | Over budget | Locked | Peak MB | Thermal % |')
-print('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |')
+print('| System / scenario | Frames | Mean ms | P50 | P95 | Peak | Rate mean | Rate P95 | Delivered | Lag ms | Over budget | Locked | Peak MB | Unattributed ms | CPU ms / parallelism | Carrier strategy | Thermal % |')
+print('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |')
 stages_by_case = []
 for case in report['cases']:
     samples = case['samples']
@@ -61,10 +62,20 @@ for case in report['cases']:
         name = thermal_name(s['thermalState'])
         thermal[name] = thermal.get(name, 0) + 1
     mix = ' '.join(f"{k} {v / count:.0%}" for k, v in sorted(thermal.items()))
+    tracked = sum(1 for s in samples if s.get('carrierTracked'))
+    afc = sum(1 for s in samples if (s.get('afcDecimation') or 1) > 1)
+    pll = sum(1 for s in samples if (s.get('pllStride') or 1) > 1)
+    repeats = sum(1 for s in samples if s.get('continuity') == 'repeat')
+    cpu = statistics.mean(s.get('cpuMS', 0) for s in samples)
+    stage_keys = [k for k in samples[0].get('stagesMS', {}) if k != 'combinationIncluded']
+    stage_total = sum(statistics.mean(s['stagesMS'].get(k, 0) for s in samples) for k in stage_keys)
+    encode = statistics.mean(s.get('encodeMS', 0) for s in samples)
+    image = statistics.mean(s.get('imageConversionMS', 0) for s in samples)
+    unattributed = mean-encode-image-stage_total
     print(f"| {case['system']} / {case['scenario']} | {count} | {mean:.2f} | {median:.2f} | {p95:.2f} | "
           f"{peak:.2f} | {budget / mean * 100:.0f}% | {budget / p95 * 100:.0f}% | "
           f"{effective / nominal * 100:.0f}% | {lag:.0f} | {over} ({over / count:.0%}) | "
-          f"{locked}/{count} | {memory:.1f} | {mix} |")
+          f"{locked}/{count} | {memory:.1f} | {unattributed:5.2f} | {cpu:5.1f} {cpu/mean:4.2f}x | tracked {tracked/count:.0%} afc {afc/count:.0%} pll {pll/count:.0%} repeat {repeats} | {mix} |")
     assert all(s['audioValid'] for s in samples), 'Invalid audio/frame sample'
     if 'stagesMS' in samples[0]:
         stages = {key: statistics.mean(s['stagesMS'].get(key, 0) for s in samples)

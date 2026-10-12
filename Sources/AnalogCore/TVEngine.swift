@@ -33,6 +33,13 @@ enum TVParallelDiagnostics {
     min(requested,TVParallelDiagnostics.workerLimit)
 }
 
+/// Allocate `count` floats without a zero fill. Every element must be written
+/// before it is read: these buffers are the working arrays of the per-sample
+/// stages, and zeroing one costs a full pass over the array for nothing.
+@inline(__always) func uninitializedFloats(_ count: Int) -> [Float] {
+    [Float](unsafeUninitializedCapacity: count) { _, initialized in initialized = count }
+}
+
 /// Each worker owns disjoint elements. The owning array keeps this buffer alive
 /// until synchronous concurrentPerform returns; no pointer escapes that scope.
 private struct TVOutput<Value>: @unchecked Sendable {
@@ -90,7 +97,7 @@ public enum TVEngine {
         }
         // Match the reference's clamped boundary samples, rather than zero padding.
         let padded = [Float](repeating: values[0],count: radius) + values + [Float](repeating: values[values.count-1],count: radius)
-        var output = [Float](repeating: 0,count: values.count)
+        var output = uninitializedFloats(values.count)
         padded.withUnsafeBufferPointer { x in
             k.withUnsafeBufferPointer { coefficients in
                 output.withUnsafeMutableBufferPointer { y in
@@ -157,7 +164,7 @@ public enum TVEngine {
             perform(count: s.height, execution: execution) { row in
                 let line = s.activeLine(row), t = line*s.lineDuration+s.activeStart
                 let a = index(t), b = index(t+s.activeDuration), length = b-a
-                var y = [Float](repeating: 0,count: length), u = y, v = y
+                var y = uninitializedFloats(length), u = uninitializedFloats(length), v = uninitializedFloats(length)
                 for x in 0..<length {
                     let position = (Double(x)+0.5)*Double(s.width)/Double(length)-0.5
                     let left = max(0,min(s.width-1,Int(floor(position)))), right = min(s.width-1,left+1)
@@ -296,7 +303,7 @@ public enum TVEngine {
                     output.store(DecodedLine(line: line,y: [],u: [],v: [],magnitude: magnitude,colorLock: colorLock),at: row)
                     return
                 }
-                var y = [Float](repeating: 0,count: length), u = y, v = y
+                var y = uninitializedFloats(length), u = uninitializedFloats(length), v = uninitializedFloats(length)
                 let combDelay = Int((s.samplesPerLine * (s == .pal ? 2 : 1)).rounded())
                 for x in 0..<length {
                     let i = a+x

@@ -15,6 +15,15 @@ private struct FrameSample: Codable, Sendable {
     var locked: Bool
     var recoveredLines: Int
     var audioValid: Bool
+    /// P0/P1 telemetry: how this frame related to the previous one, and which
+    /// carrier-recovery strategy the receiver actually used. These are the
+    /// values that explain a damaged frame's cost.
+    var continuity: String
+    var carrierTracked: Bool
+    var afcDecimation: Int
+    var pllStride: Int
+    /// Process CPU milliseconds consumed by this frame (all threads).
+    var cpuMS: Double = 0
 }
 /// One measured case. The raw samples stay in the report; the summary below is
 /// derived from them and stored as well, so a report can be read without
@@ -54,6 +63,31 @@ private struct CaseReport: Codable, Sendable {
     /// Mean per-stage time as a percentage of the frame budget: which stage eats
     /// the budget. Keys match FrameSample.stagesMS.
     var stagesBudgetPercent: [String: Double] = [:]
+    /// Share of frames the receiver ran with the carrier tracked, and the share
+    /// that used the reduced-rate estimate and phase feedback.
+    var carrierTrackedPercent: Double = 0
+    var afcDecimatedPercent: Double = 0
+    var pllDecimatedPercent: Double = 0
+    /// Frames that re-ran samples already consumed, and forward gaps. Both cost
+    /// a whole frame each, so they belong next to the timing.
+    var repeatFrames: Int = 0
+    var gapFrames: Int = 0
+    /// Engine time not attributed to any named stage: validation, allocation,
+    /// the atomic candidate commit, thread dispatch and joins. This is the
+    /// overhead P2 has to attack, so it is measured rather than assumed.
+    var unattributedMS: Double = 0
+    /// Mean CPU milliseconds per frame, and the parallelism that implies.
+    var meanCPUMilliseconds: Double = 0
+    var achievedParallelism: Double = 0
+
+    static func continuityName(_ value: TVFrameContinuity) -> String {
+        switch value {
+        case .first: "first"
+        case .continuous: "continuous"
+        case .forwardGap: "forwardGap"
+        case .repeatOrRewind: "repeat"
+        }
+    }
 
     private static let thermalNames = ["nominal","fair","serious","critical"]
     static func thermalName(_ state: Int) -> String {
@@ -82,6 +116,21 @@ private struct CaseReport: Codable, Sendable {
         var thermal = [String: Int]()
         for sample in samples { thermal[Self.thermalName(sample.thermalState),default: 0] += 1 }
         thermalPercent = thermal.mapValues { Double($0)/Double(count)*100 }
+        // combinationIncluded is already inside modulation, so it must not be
+        // added a second time.
+        let stageTotal = samples[0].stagesMS.keys.filter { $0 != "combinationIncluded" }.reduce(0.0) { total,key in
+            total+samples.reduce(0.0) { $0+($1.stagesMS[key] ?? 0) }/Double(count)
+        }
+        let encodeTotal = samples.reduce(0.0) { $0+$1.encodeMS }/Double(count)
+        let imageTotal = samples.reduce(0.0) { $0+$1.imageConversionMS }/Double(count)
+        unattributedMS = meanMS-encodeTotal-imageTotal-stageTotal
+        meanCPUMilliseconds = samples.reduce(0.0) { $0+$1.cpuMS }/Double(count)
+        achievedParallelism = meanMS > 0 ? meanCPUMilliseconds/meanMS : 0
+        carrierTrackedPercent = Double(samples.filter(\.carrierTracked).count)/Double(count)*100
+        afcDecimatedPercent = Double(samples.filter { $0.afcDecimation > 1 }.count)/Double(count)*100
+        pllDecimatedPercent = Double(samples.filter { $0.pllStride > 1 }.count)/Double(count)*100
+        repeatFrames = samples.filter { $0.continuity == "repeat" }.count
+        gapFrames = samples.filter { $0.continuity == "forwardGap" }.count
         var stages = [String: Double]()
         for key in samples[0].stagesMS.keys {
             let total = samples.reduce(0.0) { $0+($1.stagesMS[key] ?? 0) }
@@ -101,6 +150,10 @@ private struct BenchmarkReport: Codable, Sendable {
     var optimizationVariant = TVOptimizationDiagnostics.baseline ? "baseline" : "decoder-and-tuner-v1"
     /// Cost/quality profile the chain ran with: "mobile" or "full".
     var chainProfile = "mobile"
+    /// Receiver regime this run characterised, when one was selected.
+    var regime: String?
+    /// Whether the transmit and receive halves ran overlapped on two threads.
+    var pipeline = false
     /// Parallel-stage ceiling and the QoS the DSP ran at, for sweeps.
     var parallelWorkers = TVParallelDiagnostics.workerLimitDescription
     var dspQoS = BenchmarkDiagnostics.qosName
@@ -117,6 +170,23 @@ private struct BenchmarkReport: Codable, Sendable {
 /// Launch-argument diagnostics. The worker ceiling lives in AnalogCore and is
 /// read there; the QoS has to be applied by this app, on the thread that issues
 /// the DSP work, because the parallel stages inherit it.
+/// Process CPU time (all threads, user + system). Its increment per frame is the
+/// real resource cost of a frame: dividing it by the frame time gives the
+/// parallelism actually achieved, and dividing it by the usable core count gives
+/// the floor that no scheduling change can beat.
+func processCPUSeconds() -> Double {
+    var info = mach_task_basic_info()
+    var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size/MemoryLayout<natural_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self,capacity: Int(count)) {
+            task_info(mach_task_self_,task_flavor_t(MACH_TASK_BASIC_INFO),$0,&count)
+        }
+    }
+    guard result == KERN_SUCCESS else { return 0 }
+    return Double(info.user_time.seconds)+Double(info.user_time.microseconds)/1e6
+        + Double(info.system_time.seconds)+Double(info.system_time.microseconds)/1e6
+}
+
 private enum BenchmarkDiagnostics {
     static func argument(_ name: String) -> String? {
         let arguments = ProcessInfo.processInfo.arguments
@@ -141,6 +211,49 @@ private struct Preview: Sendable {
     var width: Int
     var height: Int
 }
+/// The three receiver operating regimes the measurement plan asks to
+/// characterise separately. These are receiver operating points, not changes to
+/// the signal model: a settled lock, the capture edge where the reduced-rate
+/// policy keeps switching, and sustained loss.
+enum BenchmarkRegime: String, CaseIterable, Sendable {
+    case lock, edge, loss
+    var title: String {
+        switch self {
+        case .lock: "稳定锁定"
+        case .edge: "捕获边缘"
+        case .loss: "持续失锁"
+        }
+    }
+    func apply(to settings: inout TerrestrialSettings) {
+        switch self {
+        case .lock:
+            // Carrier centred and quiet: the AFC and PLL stay in the tracked
+            // strategy for the whole case.
+            settings.carrierToNoiseDB = 60
+        case .edge:
+            // Just inside the 150 kHz capture limit with echo and noise, so the
+            // carrier alternates between captured and dropped and the frame cost
+            // should show it.
+            settings.tuningOffsetKHz = 140
+            settings.carrierToNoiseDB = 26
+            settings.echoGain = 0.2; settings.echoDelayMicroseconds = 6
+            settings.echoPhaseDegrees = 30
+        case .loss:
+            // Far outside the capture range: the receiver stays in the dense
+            // strategy for the whole case.
+            settings.signalDB = -80
+            settings.carrierToNoiseDB = 10
+        }
+    }
+}
+
+private struct CasePlan: Sendable {
+    let system: TerrestrialSystem
+    let title: String
+    let scenario: String
+    let settings: TerrestrialSettings
+}
+
 private enum BenchmarkRunner {
     static func seconds(_ duration: Duration) -> Double {
         let c = duration.components
@@ -178,14 +291,59 @@ private enum BenchmarkRunner {
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(report).write(to: url,options: .atomic)
     }
+    /// The cases a run performs: either the two standards against the default
+    /// and damaged scenarios, or the two standards against one regime.
+    static func plans(chain: TVChainProfile, regime: BenchmarkRegime?) -> [CasePlan] {
+        var plans = [CasePlan]()
+        for system in TerrestrialSystem.allCases {
+            if let regime {
+                var settings = TerrestrialSettings(system: system)
+                settings.performance = chain
+                regime.apply(to: &settings)
+                plans.append(CasePlan(system: system,title: "\(system.rawValue) / \(regime.title)",
+                                      scenario: regime.rawValue,settings: settings))
+                continue
+            }
+            for damaged in [false,true] {
+                var settings = TerrestrialSettings(system: system)
+                settings.performance = chain
+                if damaged {
+                    settings.echoGain = 0.15; settings.echoDelayMicroseconds = 4.3
+                    settings.echoPhaseDegrees = 30; settings.tuningOffsetKHz = 20
+                    settings.transmitter.enabled = true
+                    settings.transmitter.powerDB = 3
+                    settings.transmitter.sharedCoupling = 0.15
+                    settings.transmitter.encoder.enabled = true
+                    settings.transmitter.encoder.differentialGain = 0.05
+                    settings.transmitter.vsb.enabled = true
+                    settings.receiverDamage.agcEnabled = true
+                    settings.receiverDamage.syncEnabled = true
+                    settings.propagation.enabled = true
+                    settings.propagation.weather.enabled = true
+                    settings.propagation.weather.rainMMHour = 10
+                }
+                plans.append(CasePlan(system: system,
+                                      title: system.rawValue + (damaged ? " / 损伤" : " / 默认"),
+                                      scenario: damaged ? "damaged" : "default",settings: settings))
+            }
+        }
+        return plans
+    }
+
     static func run(duration: Double, url: URL,
                     update: @escaping @Sendable (String, Preview?) async -> Void) async {
         // The phone-class chain profile is the point of this benchmark; pass
         // --benchmark-full to measure the reference chain for comparison.
         let chain: TVChainProfile = ProcessInfo.processInfo.arguments.contains("--benchmark-full")
             ? .full : .mobile
+        let regime = BenchmarkDiagnostics.argument("--benchmark-regime").flatMap(BenchmarkRegime.init(rawValue:))
         var report = BenchmarkReport(hardware: hardware(),durationPerCase: duration)
         report.chainProfile = chain == .full ? "full" : "mobile"
+        report.regime = regime?.rawValue
+        // P2: run the transmit half of the next frame while this frame is being
+        // received. Opt-in so the sequential path stays the reference.
+        let usePipeline = ProcessInfo.processInfo.arguments.contains("--benchmark-pipeline")
+        report.pipeline = usePipeline
         if ProcessInfo.processInfo.arguments.contains("--benchmark-metal") {
             // CPU-vs-GPU kernel comparison on this device, written into the same
             // report so one pull carries both.
@@ -200,36 +358,56 @@ private enum BenchmarkRunner {
             return
         }
         do {
-            for system in TerrestrialSystem.allCases {
-                for damaged in [false,true] {
+            for plan in plans(chain: chain, regime: regime) {
                     try Task.checkCancellation()
+                    let system = plan.system
+                    let settings = plan.settings
                     var engine = TVUnifiedChannelEngine(system: system)
-                    var settings = TerrestrialSettings(system: system)
-                    settings.performance = chain
-                    if damaged {
-                        settings.echoGain = 0.15; settings.echoDelayMicroseconds = 4.3
-                        settings.echoPhaseDegrees = 30; settings.tuningOffsetKHz = 20
-                        settings.transmitter.enabled = true
-                        settings.transmitter.powerDB = 3
-                        settings.transmitter.sharedCoupling = 0.15
-                        settings.transmitter.encoder.enabled = true
-                        settings.transmitter.encoder.differentialGain = 0.05
-                        settings.transmitter.vsb.enabled = true
-                        settings.receiverDamage.agcEnabled = true
-                        settings.receiverDamage.syncEnabled = true
-                        settings.propagation.enabled = true
-                        settings.propagation.weather.enabled = true
-                        settings.propagation.weather.rainMMHour = 10
-                    }
+                    let pipeline = usePipeline
+                        ? TVFramePipeline(system: system,qos: DispatchQoS(qosClass: BenchmarkDiagnostics.qos,relativePriority: 0))
+                        : nil
+                    var encodedSeconds = [Int64: Double]()
                     let source = TVFrame.colorBars(system.video)
-                    let title = system.rawValue + (damaged ? " / 损伤" : " / 默认")
+                    let title = plan.title
                     await update(title+"：预热",nil)
-                    var current = CaseReport(system: system.rawValue,scenario: damaged ? "damaged" : "default",
+                    var current = CaseReport(system: system.rawValue,scenario: plan.scenario,
                                              budgetMS: system.video.frameDuration*1000,
                                              nominalFPS: 1/system.video.frameDuration)
+                    // Build one frame's input and audio. The pipeline needs the
+                    // next frame's input before this frame's receive finishes.
+                    func makeFrame(_ n: Int64) throws -> (CompositeVideo, [Float], Double) {
+                        let audioOffset = TVSoundClock.offset(frame: n,standard: system.video)
+                        let audio = (0..<TVSoundClock.count(frame: n,standard: system.video)).map {
+                            Float(0.25*sin(2 * Double.pi * 1000 * Double(audioOffset+Int64($0))/48_000))
+                        }
+                        let encodedStart = ContinuousClock.now
+                        let cvbs = try TVEngine.encode(source,frameIndex: n,damage: settings.transmitter.encoder)
+                        return (cvbs,audio,seconds(encodedStart.duration(to: .now)))
+                    }
+                    func submit(_ n: Int64) throws {
+                        let frame = try BenchmarkDiagnostics.dspQueue.sync { try makeFrame(n) }
+                        encodedSeconds[n] = frame.2
+                        try pipeline?.submit(frame.0,settings: settings,audio: frame.1)
+                    }
+                    /// Same frame, but built on the transmit thread so its encode
+                    /// time is overlapped rather than serial with the receive pass.
+                    func submitRequest(_ pipeline: TVFramePipeline, _ n: Int64) throws {
+                        let encodedStart = ContinuousClock.now
+                        try pipeline.submit(TVFrameRequest(frameIndex: n,settings: settings) { index in
+                            let offset = TVSoundClock.offset(frame: index,standard: system.video)
+                            let audio = (0..<TVSoundClock.count(frame: index,standard: system.video)).map {
+                                Float(0.25*sin(2 * Double.pi * 1000 * Double(offset+Int64($0))/48_000))
+                            }
+                            return (try TVEngine.encode(source,frameIndex: index,damage: settings.transmitter.encoder),audio)
+                        })
+                        encodedSeconds[n] = seconds(encodedStart.duration(to: .now))
+                    }
                     var index: Int64 = 0
+                    var cpuSeconds = processCPUSeconds()
+                    if pipeline != nil { try submit(0) }
                     var start = ContinuousClock.now
                     var lastUpdate = start
+                    var lastSave = start
                     var nextDeadline = start
                     report.cases.append(current)
                     while index < 3 || seconds(start.duration(to: .now)) < duration {
@@ -241,11 +419,32 @@ private enum BenchmarkRunner {
                         }
                         // Encode and the whole RF chain run on the diagnostic QoS
                         // queue so every parallel stage inherits that QoS.
-                        let outcome = try BenchmarkDiagnostics.dspQueue.sync {
-                            () throws -> (ContinuousClock.Instant, TerrestrialReception, ContinuousClock.Instant) in
-                            let cvbs = try TVEngine.encode(source,frameIndex: index,damage: settings.transmitter.encoder)
-                            let encoded = ContinuousClock.now
-                            return (encoded,try engine.process(cvbs,settings: settings,audio: audio),ContinuousClock.now)
+                        let outcome: (ContinuousClock.Instant, TerrestrialReception, ContinuousClock.Instant)
+                        if let pipeline {
+                            // Hand the next frame's transmit pass over before
+                            // waiting for this frame, so the two halves overlap.
+                            // Hand the *next* frame's construction to the
+                            // transmit thread, where it overlaps this frame's
+                            // receive pass instead of sitting on this thread.
+                            if pipeline.pendingFrames == 0 {
+                                try submitRequest(pipeline,index)
+                            } else if pipeline.allowsLookahead {
+                                try submitRequest(pipeline,index+1)
+                            }
+                            outcome = try BenchmarkDiagnostics.dspQueue.sync {
+                                let received = ContinuousClock.now
+                                let value = try pipeline.receive()
+                                return (received,value,ContinuousClock.now)
+                            }
+                        } else {
+                            outcome = try BenchmarkDiagnostics.dspQueue.sync {
+                                () throws -> (ContinuousClock.Instant, TerrestrialReception, ContinuousClock.Instant) in
+                                let encodedStart = ContinuousClock.now
+                                let cvbs = try TVEngine.encode(source,frameIndex: index,damage: settings.transmitter.encoder)
+                                let encoded = ContinuousClock.now
+                                encodedSeconds[index] = seconds(encodedStart.duration(to: encoded))
+                                return (encoded,try engine.process(cvbs,settings: settings,audio: audio),ContinuousClock.now)
+                            }
                         }
                         let encoded = outcome.0, result = outcome.1, received = outcome.2
                         let pixels = preview(result.frame)
@@ -253,6 +452,9 @@ private enum BenchmarkRunner {
                         let valid = result.frame.rgb.allSatisfy { $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }
                             && result.audio.count == audio.count && result.audio.allSatisfy(\.isFinite)
                         guard valid else { throw TVError.invalidSignal }
+                        let cpuNow = processCPUSeconds()
+                        let frameCPUMS = (cpuNow-cpuSeconds)*1000
+                        cpuSeconds = cpuNow
                         if index >= 3 {
                             let t = result.timings
                             let stages = ["modulation": t.modulation, "combinationIncluded": t.channelCombination,
@@ -263,23 +465,37 @@ private enum BenchmarkRunner {
                             current.samples.append(FrameSample(stagesMS: stages,index: index,
                                 elapsedSeconds: seconds(start.duration(to: finished)),
                                 processingMS: seconds(frameStart.duration(to: finished))*1000,
-                                encodeMS: seconds(frameStart.duration(to: encoded))*1000,
+                                encodeMS: (encodedSeconds[index] ?? 0)*1000,
                                 receiverMS: seconds(encoded.duration(to: received))*1000,
                                 imageConversionMS: seconds(received.duration(to: finished))*1000,
                                 memoryMB: memoryMB(),thermalState: ProcessInfo.processInfo.thermalState.rawValue,
-                                locked: result.lock == .locked,recoveredLines: result.recoveredLines,audioValid: valid))
+                                locked: result.lock == .locked,recoveredLines: result.recoveredLines,audioValid: valid,
+                                continuity: CaseReport.continuityName(result.frameContinuity),
+                                carrierTracked: result.carrierTracked,
+                                afcDecimation: result.carrierEstimationDecimation,
+                                pllStride: result.carrierPLLStrideUsed,
+                                cpuMS: frameCPUMS))
                         }
-                        if index == 2 { start = .now; lastUpdate = start; nextDeadline = start }
+                        if index == 2 { start = .now; lastUpdate = start; lastSave = start; nextDeadline = start }
                         if seconds(lastUpdate.duration(to: finished)) >= 1 {
                             let elapsed = seconds(start.duration(to: finished))
                             current.summarize()
-                            let status = String(format: "%@\n%.0f / %.0f 秒 · 平均 %.1f ms · P95 %.1f ms · 峰值 %.1f ms\n%@\n超预算 %d / %d (%.0f%%) · 热状态 %d",
-                                title,elapsed,duration,current.meanMS,current.p95MS,current.peakMS,current.rateLine,
+                            let status = String(format: "%@\n%.0f / %.0f 秒 · 平均 %.1f ms · P95 %.1f ms · 峰值 %.1f ms\nCPU %.1f ms/帧（并行度 %.2f×）\n%@\n超预算 %d / %d (%.0f%%) · 热状态 %d",
+                                title,elapsed,duration,current.meanMS,current.p95MS,current.peakMS,
+                                current.meanCPUMilliseconds,current.achievedParallelism,current.rateLine,
                                 current.overBudget,current.samples.count,current.overBudgetPercent,
                                 ProcessInfo.processInfo.thermalState.rawValue)
                             await update(status,pixels)
                             report.cases[report.cases.count-1] = current
-                            try save(report,to: url)
+                            // Saving the whole report is expensive (tens of MB with
+                            // every frame sampled). Do it rarely: the measured
+                            // per-frame time is unaffected, but the achieved frame
+                            // rate is not, and a benchmark must not throttle itself
+                            // with its own I/O.
+                            if seconds(lastSave.duration(to: finished)) >= 15 {
+                                try save(report,to: url)
+                                lastSave = .now
+                            }
                             lastUpdate = .now
                         }
                         index += 1
@@ -292,7 +508,6 @@ private enum BenchmarkRunner {
                     report.cases[report.cases.count-1] = current
                     try save(report,to: url)
                     print("ANALINE_CASE \(title) mean=\(current.meanMS) p95=\(current.p95MS) peak=\(current.peakMS) overBudget=\(current.overBudget)/\(current.samples.count) rate=\(current.rateMeanPercent) playback=\(current.playbackRatePercent) lag=\(current.lagMS)")
-                }
             }
             report.completed = true
             try save(report,to: url)
@@ -362,6 +577,7 @@ private enum BenchmarkRunner {
             .onChange(of: scenePhase) { _,phase in if phase == .background { model.stop() } }
             .task {
                 let args = ProcessInfo.processInfo.arguments
+                if args.contains("--benchmark-metal") { model.start(duration: 1) }
                 if args.contains("--benchmark-profile") { model.start(duration: 8) }
                 if args.contains("--benchmark-quick") { model.start(duration: 30) }
                 if args.contains("--benchmark-sustained") { model.start(duration: 180) }

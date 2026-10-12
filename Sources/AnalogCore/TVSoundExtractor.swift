@@ -101,8 +101,7 @@ public struct TVSoundExtractor: Sendable {
                                  profile: TVChainProfile = .full) -> TVSoundIQ {
         configure(rate: sampleRate, profile: profile)
         let count = i.count
-        var shiftedI = [Float](repeating: 0,count: count)
-        var shiftedQ = shiftedI
+        var shiftedI = uninitializedFloats(count), shiftedQ = uninitializedFloats(count)
         let step = -2*Double.pi*shiftHz/sampleRate
         let workers = cappedWorkers(min(12,max(1,count/65_536)))
         i.withUnsafeBufferPointer { ip in
@@ -134,8 +133,7 @@ public struct TVSoundExtractor: Sendable {
                                              profile: TVChainProfile = .full) -> TVSoundIQ {
         configure(rate: sampleRate, profile: profile)
         let count = video.count
-        var mixedI = [Float](repeating: 0,count: count)
-        var mixedQ = mixedI
+        var mixedI = uninitializedFloats(count), mixedQ = uninitializedFloats(count)
         let step = -2*Double.pi*carrierHz/sampleRate
         let workers = cappedWorkers(min(12,max(1,count/65_536)))
         video.withUnsafeBufferPointer { vp in

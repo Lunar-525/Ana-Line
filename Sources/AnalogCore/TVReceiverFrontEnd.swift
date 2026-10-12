@@ -239,7 +239,14 @@ public struct TVReceiverFrontEnd: Sendable {
     public init(system: TerrestrialSystem) { self.system = system }
 
     public mutating func process(_ input: TVChannelIQ, settings: TerrestrialSettings) throws -> TVFrontEndOutput {
-        let started = ContinuousClock.now
+        try process(input, settings: settings, started: ContinuousClock.now)
+    }
+
+    /// One front-end pass whose reported time is measured from `started`, so a
+    /// caller that owns the front end can keep the tuning time covering the whole
+    /// receive prologue exactly as before.
+    public mutating func process(_ input: TVChannelIQ, settings: TerrestrialSettings,
+                                 started: ContinuousClock.Instant) throws -> TVFrontEndOutput {
         try input.validate()
         guard input.system == system, input.sampleRate == system.video.sampleRate else { throw TVError.invalidSignal }
         try settings.validate(rate: input.sampleRate)

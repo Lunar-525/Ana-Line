@@ -35,6 +35,22 @@ Schema 2 adds per-frame `stagesMS`: modulation, channel, tuner/IF, carrier estim
 
 The benchmark runs the phone-class chain profile `TVChainProfile.mobile` by default and records it as `chainProfile` in the report. Launch with `--benchmark-full` to measure the reference profile `TVChainProfile.full` with identical reporting overhead, then compare the two reports case by case. The profile only changes reduced-cost stages; the signal model, the sampling rates and the filter designs that are not named in `TVChainProfile` stay the same. `TVChainProfile.mobile` documents, per knob, what each reduction was measured to cost. The reference behaviour of every stage is unchanged when the profile is `full`, which is the default for all non-iOS callers and for sessions that predate the field.
 
+## Hot-state profiling
+
+`iOS/profile_symbols.py` aggregates an Instruments time-profile export by symbol and reports the achieved parallelism, the split across performance and efficiency cores, and self and inclusive time per symbol. Instruments interns processes, threads, cores and backtraces as ids defined in batches, so it parses the export twice:
+
+```sh
+xcrun xctrace record --template 'Time Profiler' --device <UDID> \
+  --time-limit 180s --window 90s --output run.trace --launch -- com.analine.benchmark --benchmark-sustained
+xcrun xctrace export --input run.trace \
+  --xpath '/trace-toc/run[@number="1"]/data/table[@schema="time-profile"]' > tp.xml
+xcrun xctrace export --input run.trace \
+  --xpath '/trace-toc/run[@number="1"]/data/table[@schema="device-thermal-state-intervals"]'
+python3 iOS/profile_symbols.py tp.xml 90
+```
+
+`--window` only sets the analysis window in Instruments; the exported table still covers the whole recording, so pass the second at which the device reached the thermal state of interest (the thermal table above says when) as the last argument. The device must be unlocked for a benchmark to start at all, including under xctrace. Findings are in `Reports/thermal-profile-14pro.md`.
+
 ## Reported performance parameters
 
 Schema 3 stores a summary per case next to the raw per-frame samples, so a partial run still carries usable numbers and a raw report can be read without recomputing:
@@ -54,6 +70,8 @@ Schema 3 stores a summary per case next to the raw per-frame samples, so a parti
 `python3 iOS/summarize.py report.json` prints these as tables, recomputed from the samples so schema 1 and 2 reports still work, and warns if a stored summary disagrees with the samples.
 
 Diagnostic launch arguments, all optional and immutable per process: `--benchmark-full` (reference chain profile), `--benchmark-workers N` (ceiling on the worker count of every parallel stage; default unlimited), `--benchmark-qos userInteractive|userInitiated|default|utility|background` (QoS the DSP runs at, so its parallel workers inherit it), `--benchmark-baseline` (bypass the cached decoder interpolation/pointer path and the parallel tuner), `--benchmark-profile` / `--benchmark-quick` / `--benchmark-sustained` (8 / 30 / 180 seconds per case).
+
+`--benchmark-metal` (with any duration argument) runs a one-shot CPU-vs-GPU comparison for four kernels on the device itself — complex FIR, NCO mixing, the transmitter power amplifier and Gaussian noise — and writes it into `metalKernels` in the same report. It exists because a desktop part is a poor proxy for a phone: the Mac has many fast CPU cores beside a modest GPU slice. The accelerator prototype that it measures lives in `Sources/AnalogCore/TVMetalAccelerator.swift` and is not wired into the chain; the device measurements and the verdict are in `Reports/thermal-realtime-round2.md`. Note that the benchmark needs the app in the foreground, so the device must not be locked when a run starts.
 
 For a paired A/B, alternate the two configurations back to back and compare the per-pair differences rather than absolute numbers: a single device drifts by more than 100% between sessions as it throttles, and `thermalPercent` shows how much of each case ran hot.
 

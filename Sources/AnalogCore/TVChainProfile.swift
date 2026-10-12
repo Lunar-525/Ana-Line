@@ -55,6 +55,11 @@ public struct TVChainProfile: Codable, Equatable, Sendable {
     /// Sub-sample stride of the in-band cross-compression power estimate. 1
     /// averages every RF sample into its companion-rate cell.
     public var amplifierCouplingStride: Int
+    /// Frames of confirmed loss after which the receiver stops paying for a
+    /// full-rate search. A full-rate acquisition over a channel that has been
+    /// noise for many frames cannot succeed any sooner, so the dense path is
+    /// kept only long enough to cover transient dropouts.
+    public var sustainedLossFrames: Int
     /// Carrier-estimation decimation once the receiver already holds lock. The
     /// estimate is still taken from the same narrowband carrier filter; the
     /// filter is evaluated on a decimated grid whose Nyquist stays far above
@@ -69,7 +74,7 @@ public struct TVChainProfile: Codable, Equatable, Sendable {
                 carrierPLLStride: Int = 1, noiseGenerator: TVNoiseGenerator = .sequentialBoxMuller,
                 amplifierAntiAliasRadius: Int = 12, amplifierTablePoints: Int = 8192,
                 amplifierCouplingStride: Int = 1, afcLockedDecimation: Int = 1,
-                spectrumWindows: Int = 8) {
+                sustainedLossFrames: Int = 8, spectrumWindows: Int = 8) {
         self.soundUpsampleRadius = soundUpsampleRadius
         self.soundUpsamplePhases = soundUpsamplePhases
         self.soundExtractionRadius = soundExtractionRadius
@@ -81,6 +86,7 @@ public struct TVChainProfile: Codable, Equatable, Sendable {
         self.amplifierTablePoints = amplifierTablePoints
         self.amplifierCouplingStride = amplifierCouplingStride
         self.afcLockedDecimation = afcLockedDecimation
+        self.sustainedLossFrames = sustainedLossFrames
         self.spectrumWindows = spectrumWindows
     }
 
@@ -105,13 +111,13 @@ public struct TVChainProfile: Codable, Equatable, Sendable {
         soundResamplerSinglePrecision: true, soundSynthesisIntegerSchedule: true,
         carrierPLLStride: 2, noiseGenerator: .parallelBoxMuller, amplifierAntiAliasRadius: 12,
         amplifierTablePoints: 2048, amplifierCouplingStride: 4, afcLockedDecimation: 8,
-        spectrumWindows: 2)
+        sustainedLossFrames: 8, spectrumWindows: 2)
 
     public enum CodingKeys: String, CodingKey {
         case soundUpsampleRadius, soundUpsamplePhases, soundExtractionRadius
         case soundResamplerSinglePrecision, soundSynthesisIntegerSchedule, carrierPLLStride, noiseGenerator
         case amplifierAntiAliasRadius, amplifierTablePoints, amplifierCouplingStride
-        case afcLockedDecimation, spectrumWindows
+        case afcLockedDecimation, sustainedLossFrames, spectrumWindows
     }
 
     /// Unknown or missing keys fall back to the reference value, so a session
@@ -130,6 +136,7 @@ public struct TVChainProfile: Codable, Equatable, Sendable {
         amplifierTablePoints = try c.decodeIfPresent(Int.self,forKey: .amplifierTablePoints) ?? d.amplifierTablePoints
         amplifierCouplingStride = try c.decodeIfPresent(Int.self,forKey: .amplifierCouplingStride) ?? d.amplifierCouplingStride
         afcLockedDecimation = try c.decodeIfPresent(Int.self,forKey: .afcLockedDecimation) ?? d.afcLockedDecimation
+        sustainedLossFrames = try c.decodeIfPresent(Int.self,forKey: .sustainedLossFrames) ?? d.sustainedLossFrames
         spectrumWindows = try c.decodeIfPresent(Int.self,forKey: .spectrumWindows) ?? d.spectrumWindows
     }
 
@@ -138,6 +145,7 @@ public struct TVChainProfile: Codable, Equatable, Sendable {
               (4...48).contains(soundExtractionRadius), (1...64).contains(carrierPLLStride),
               (2...24).contains(amplifierAntiAliasRadius), (256...16384).contains(amplifierTablePoints),
               (1...64).contains(amplifierCouplingStride), (1...64).contains(afcLockedDecimation),
+              (1...600).contains(sustainedLossFrames),
               (1...32).contains(spectrumWindows),
               amplifierTablePoints % 16 == 0 else { throw TVError.invalidSettings }
     }

@@ -70,22 +70,42 @@ private struct TVResamplerWork: @unchecked Sendable {
             if phase < 0 { phase = 0 }
             let offset = phase*tapCount
             let first = Int64(base)-Int64(kernelRadius)
-            var si: Float = 0, sq: Float = 0
             let localFirst = Int(first-fullStart)
             if localFirst >= 0, localFirst <= sampleCount-tapCount {
-                for k in 0..<tapCount {
-                    let weight = tb[offset+k]
-                    si += weight*xb[localFirst+k]; sq += weight*yb[localFirst+k]
+                // The tap sum is a chain of dependent float adds, and at these
+                // lengths that chain, not the multiply throughput, sets the cost.
+                // Four independent partial sums keep four adds in flight; the
+                // result differs only in the last bits of the sum.
+                var si0: Float = 0, si1: Float = 0, si2: Float = 0, si3: Float = 0
+                var sq0: Float = 0, sq1: Float = 0, sq2: Float = 0, sq3: Float = 0
+                var k = 0
+                while k + 4 <= tapCount {
+                    let w0 = tb[offset+k], w1 = tb[offset+k+1]
+                    let w2 = tb[offset+k+2], w3 = tb[offset+k+3]
+                    let i0 = xb[localFirst+k], i1 = xb[localFirst+k+1]
+                    let i2 = xb[localFirst+k+2], i3 = xb[localFirst+k+3]
+                    let q0 = yb[localFirst+k], q1 = yb[localFirst+k+1]
+                    let q2 = yb[localFirst+k+2], q3 = yb[localFirst+k+3]
+                    si0 += w0*i0; si1 += w1*i1; si2 += w2*i2; si3 += w3*i3
+                    sq0 += w0*q0; sq1 += w1*q1; sq2 += w2*q2; sq3 += w3*q3
+                    k += 4
                 }
+                while k < tapCount {
+                    let weight = tb[offset+k]
+                    si0 += weight*xb[localFirst+k]; sq0 += weight*yb[localFirst+k]
+                    k += 1
+                }
+                oi[m] = (si0+si1)+(si2+si3); oq[m] = (sq0+sq1)+(sq2+sq3)
             } else {
+                var si: Float = 0, sq: Float = 0
                 for k in 0..<tapCount {
                     let local = localFirst+k
                     guard local >= 0, local < sampleCount else { continue }
                     let weight = tb[offset+k]
                     si += weight*xb[local]; sq += weight*yb[local]
                 }
+                oi[m] = si; oq[m] = sq
             }
-            oi[m] = si; oq[m] = sq
         }
     }
 }
@@ -159,8 +179,7 @@ public struct TVComplexResampler: Sendable {
         }
         let fullI = historyI+i, fullQ = historyQ+q
         let fullStart = inputStart-Int64(historyI.count)
-        var outI = [Float](repeating: 0, count: outputCount)
-        var outQ = outI
+        var outI = uninitializedFloats(outputCount), outQ = uninitializedFloats(outputCount)
         let ratio = inputRate/outputRate
         let tapCount = taps, phaseCount = phases, kernelRadius = radius
         fullI.withUnsafeBufferPointer { xp in

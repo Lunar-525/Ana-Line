@@ -67,7 +67,7 @@ public struct TVSoundModulator: Sendable {
             emphasized[n] = max(-1,min(1,input))
             previousSource = source[n]
         }
-        var angles = [Float](repeating: 0,count: count)
+        var angles = uninitializedFloats(count)
         let modulationStep = 2 * Double.pi * system.soundDeviationHz/rate
         // The RF/PCM rate ratio is 8 in the unified channel, so the interpolation
         // schedule is an exact integer grid. Walking it with integer state gives

@@ -57,13 +57,18 @@ public struct TVFrame: Sendable {
 }
 
 public enum TVError: Error, LocalizedError {
-    case invalidFrame, invalidSignal, syncLost, invalidSettings
+    case invalidFrame, invalidSignal, syncLost, invalidSettings, outOfOrderFrame, injectedFault
+    case pipelineCoupling, pipelineStalled
     public var errorDescription: String? {
         switch self {
         case .invalidFrame: "Invalid TV frame dimensions or non-finite RGB pixels"
         case .invalidSignal: "Invalid or incomplete 4fsc composite frame"
         case .syncLost: "Unable to recover television synchronization"
         case .invalidSettings: "Invalid television channel settings"
+        case .outOfOrderFrame: "Frame repeated or rewound past the committed sample boundary"
+        case .injectedFault: "Injected fault for the frame commit contract"
+        case .pipelineCoupling: "A frame with shared-gain coupling was submitted while another was in flight"
+        case .pipelineStalled: "A pipeline transmit pass did not finish within its step timeout"
         }
     }
 }
