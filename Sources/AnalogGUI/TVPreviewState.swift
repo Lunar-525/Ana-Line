@@ -51,6 +51,13 @@ struct TVStatusText: View {
 }
 
 struct PreviewCanvasView: View {
+    @AppStorage("tvCRTEnabled") private var crtEnabled = false
+    @AppStorage("tvCRTHDR") private var crtHDR = true
+    @AppStorage("tvCRTBrightness") private var crtBrightness = 2.0
+    @AppStorage("tvCRTAutomaticLines") private var crtAutomaticLines = true
+    @AppStorage("tvCRTMaskPitch") private var crtMaskPitch = 9.0
+    @AppStorage("tvCRTMaskStrength") private var crtMaskStrength = 0.8
+    @AppStorage("tvCRTScanlines") private var crtScanlines = 480.0
     @ObservedObject var model: PreviewModel
     @ObservedObject var tvState: TVPreviewState
     init(model: PreviewModel) { self.model = model; tvState = model.tvPreviewState }
@@ -62,6 +69,9 @@ struct PreviewCanvasView: View {
             } else if let before = model.displayOriginal, let after = model.processed {
                 ComparisonView(before: before,after: after,
                     scanProgress: model.transmitting ? CGFloat(model.receivedRows)/CGFloat(model.sstvSettings.mode.height) : nil,
+                    crtEnabled: model.tool == .tv && crtEnabled, crtHDR: crtHDR, crtBrightness: crtBrightness,
+                    crtScanlines: crtAutomaticLines ? 0 : crtScanlines,
+                    crtMaskPitch: crtMaskPitch, crtMaskStrength: crtMaskStrength,
                     pasteImage: { model.pasteImage() },pasteEnabled: !model.busy).padding(model.tool == .tv ? 0 : 12)
             } else if model.tool == .tv {
                 TVNoSignalView(standard: model.tvStandard,preparing: model.busy || model.rendering)

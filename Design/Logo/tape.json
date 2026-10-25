@@ -1,0 +1,14 @@
+{
+  "mode": "TAPE",
+  "label": "MAGNETIC TAPE",
+  "accent": "#82A8F5",
+  "accentRGB": [130, 168, 245],
+  "activeButtonForeground": "#000000",
+  "svg": "ana-line-tape.svg",
+  "letterDetails": {
+    "L": "Broad mitered bend evokes the tape path around a guide",
+    "otherLetters": "Plain solid stems; preserve existing A–N and L–I ligatures"
+  },
+  "separator": "Upright faceted twin reels with a short return tape path",
+  "separatorSlant": 0
+}

@@ -5,10 +5,12 @@ import AnalogCore
 import AnalogImaging
 import UniformTypeIdentifiers
 
-enum EditingTool: String, CaseIterable { case film = "Film Damage", sstv = "SSTV", tv = "Terrestrial", radio = "Radio" }
+enum EditingTool: String, CaseIterable { case film = "Film Damage", sstv = "SSTV", tv = "Terrestrial", radio = "Radio", tape = "Tape" }
 
 @MainActor
 final class PreviewModel: ObservableObject {
+    let tape = TapeModel()
+    let filmLab = FilmLabController()
     @Published var original: NSImage?
     @Published private var stillProcessed: NSImage?
     let tvPreviewState = TVPreviewState()
@@ -156,6 +158,8 @@ final class PreviewModel: ObservableObject {
     private var tvPlaybackRun = 0
     private var tvResumeAfterScrub = false
     @Published var tool: EditingTool = .film { didSet {
+        if oldValue == .film { filmLab.pause() }
+        if oldValue == .tape { tape.pause() }
         pauseTVPlayback()
         stopTransmission()
         processed = tool == .sstv ? sstvOriginal : original
@@ -244,6 +248,7 @@ final class PreviewModel: ObservableObject {
     }
     func updateSelection(immediate: Bool = false) {
         guard !restoringSession else { return }
+        if tool == .radio || tool == .tape { rendering = false; return }
         request += 1
         if tool == .tv {
             guard !busy, !tvPlaying else { return }
@@ -318,12 +323,13 @@ final class PreviewModel: ObservableObject {
         do {
             library = try LUTLibrary(root: Bundle.main.resourceURL?.appendingPathComponent("LUTLibrary")
                 .existingDirectory ?? root.appendingPathComponent("Assets/LUTLibrary"))
-            selected = library?.presets.first(where: { $0.collection == "Film-Luts" && $0.name.contains("portra") })?.id ?? "none"
+            selected = filmLab.scannerPreset
         } catch { status = L("Could not read LUT library:") + " \(error)"; return }
         let argument = CommandLine.arguments.dropFirst().first
-        load(argument.map { URL(fileURLWithPath: $0) } ?? Bundle.main.url(forResource: "bliss", withExtension: "jpg") ?? root.appendingPathComponent("Assets/bliss.jpg"))
+        load(argument.map { URL(fileURLWithPath: $0) } ?? filmLab.resumeURL ?? Bundle.main.url(forResource: "bliss", withExtension: "jpg") ?? root.appendingPathComponent("Assets/bliss.jpg"))
     }
     func choose() {
+        if tool == .tape { tape.choose(); return }
         let panel = NSOpenPanel()
         // FFmpeg supports containers which macOS may not classify as UTType.movie.
         if tool != .tv { panel.allowedContentTypes = [.image] }
@@ -737,6 +743,8 @@ final class PreviewModel: ObservableObject {
                 let prepared = try await sstvRenderer.render(bypass)
                 sstvOriginal = NSImage(cgImage: prepared.original,size: NSSize(width: prepared.original.width,height: prepared.original.height))
                 guard let image = NSImage(data: result.original) else { throw CocoaError(.fileReadCorruptFile) }
+                filmLab.loaded(url)
+                settings.laboratory = filmLab.session
                 original = image; processed = tool == .sstv ? sstvOriginal : image; renderedPreset = nil
                 tvDuration = 0; tvOriginal = nil; tvSourceURL = nil
                 tvVisionSpectrum.reset(); tvSoundSpectrum.reset(); tvLightningState.reset()
@@ -850,6 +858,12 @@ struct ComparisonView: View {
     let before: NSImage
     let after: NSImage
     var scanProgress: CGFloat? = nil
+    var crtEnabled = false
+    var crtHDR = true
+    var crtBrightness = 2.0
+    var crtScanlines = 0.0
+    var crtMaskPitch = 9.0
+    var crtMaskStrength = 0.8
     var pasteImage: () -> Void = {}
     var pasteEnabled = true
     @State private var split: CGFloat = 0.5
@@ -870,7 +884,12 @@ struct ComparisonView: View {
             let scale = min(geometry.size.width/before.size.width, geometry.size.height/before.size.height)
             let w = before.size.width*scale, h = before.size.height*scale
             ZStack(alignment: .topLeading) {
-                Image(nsImage: after).resizable().frame(width: w,height: h)
+                if crtEnabled, TVCRTDisplay.isAvailable {
+                    TVCRTDisplay(image: after, hdr: crtHDR, brightness: crtBrightness, maskPitch: crtMaskPitch, maskStrength: crtMaskStrength, scanlines: crtScanlines)
+                        .frame(width: w, height: h).allowsHitTesting(false)
+                } else {
+                    Image(nsImage: after).resizable().frame(width: w,height: h)
+                }
                 Image(nsImage: before).resizable().frame(width: w,height: h)
                     .mask(alignment: .leading) { Rectangle().frame(width: w*split) }
                 if let scanProgress {
@@ -937,55 +956,17 @@ struct ContentView: View {
     }
     var body: some View {
         VStack(spacing: 16) {
-            HStack {
-                VStack(alignment: .leading,spacing: 4) {
-                    HStack(spacing: 16) {
-                        AnaLineLogo(tool: model.tool, width: 240)
-                        ToolModeSwitch(selection: $model.tool)
-                            .disabled(model.busy)
-                    }
-                    if model.tool == .tv {
-                        TVStatusText(state: model.tvPreviewState)
-                        if model.tvExporting {
-                            HStack {
-                                ProgressView(value: model.tvExportProgress).frame(width: 120)
-                                Text(String(format: L("Rendering %.0f%% · %.2f×"), model.tvExportProgress*100, model.tvExportSpeed))
-                                    .font(.caption).monospacedDigit()
-                                Button(L("Cancel")) { model.cancelTVExport() }
-                            }
-                        } else if !model.tvExportMessage.isEmpty {
-                            Text(model.tvExportMessage).font(.caption).textSelection(.enabled)
-                        }
-                    }
-                    else {
-                        Text(model.status).font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(1).textSelection(.enabled).help(model.status)
-                    }
-                    EarlyBuildStamp()
-                }
-                Spacer()
-                if model.busy || (model.rendering && !model.tvPlaying) { ProgressView().controlSize(.small) }
-                Button { model.choose() } label: {
-                    Text(model.tool == .tv ? L("Choose Video…") : L("Choose Image…"))
-                        .font(.system(size: 13, weight: .medium))
-                        .frame(width: 120, height: 80)
-                }
-                .buttonStyle(HeaderImageButtonStyle())
-                .disabled(model.busy)
-            }
-            .padding(20)
-            .padding(.top, 10)
-            .background(Color.black.ignoresSafeArea(.container, edges: .top))
-            // Hung before the negative padding below. That padding is what lets
-            // the header bleed past the workspace gutter to the window's own side
-            // and top edges, and it reports the *inset* frame, so an overlay hung
-            // after it would sit 20pt low and 20pt short on each side.
-            .overlay(alignment: .top) { HazardStripeBand() }
-            .modifier(WorkspaceHeaderDrag())
-            .padding(.horizontal, -20)
-            .padding(.top, -20)
+            // One header, four modes; see `WorkspaceHeader`. The negative
+            // padding bleeds its own 20 pt gutter out to the window's side and
+            // top edges. Turning off isMovableByWindowBackground stopped AppKit
+            // from treating the header as title-bar background, which
+            // re-inserted a safe-area inset the old drag path used to absorb;
+            // `-20` here takes that same inset back out, once, for every mode.
+            WorkspaceHeader(model: model)
+                .padding(.horizontal, -20)
+                .padding(.top, -20)
             if model.tvPreparing { TVPreparationBar(model: model) }
-            if model.tool == .film { HStack {
+            if model.tool == .film && model.settings.laboratory?.stage == .scan { HStack {
                 TextField(L("Search film stocks…"),text: $model.search).textFieldStyle(.roundedBorder).frame(width: 220)
                 Picker(L("Library"),selection: $model.collection) {
                     ForEach(model.collections,id: \.self) { Text($0).tag($0) }
@@ -1018,7 +999,11 @@ struct ContentView: View {
                     }.padding(.bottom,8).padding(.horizontal,6)
                 }.padding(.horizontal,-6)
             } else if model.tool == .radio {
-                RadioFMView()
+                RadioView()
+            } else if model.tool == .tape {
+                TapeView(model: model.tape)
+            } else if model.tool == .film {
+                FilmLabWorkspace(model: model,lab: model.filmLab)
             } else {
             HStack(alignment: .top,spacing: 16) {
                 VStack(spacing: 12) {
@@ -1043,20 +1028,20 @@ struct ContentView: View {
                     .disabled(model.busy || model.original == nil)
             }.frame(minHeight: 360)
             }
-            if model.tool != .tv && model.tool != .radio { HStack {
+            if model.tool == .sstv { HStack {
                 Spacer()
                 Text(model.tool == .sstv ? "\(model.renderedSSTV.mode.rawValue) · \(L("Signal simulation"))" : model.renderedPreset?.name ?? L("Original / No LUT"))
             }
                 .font(.caption).foregroundStyle(.secondary)
             }
-            if model.tool != .tv && model.tool != .radio { Text(model.tool == .sstv ? "\(L("Fit")) \(model.renderedSSTV.mode.dimensions) → TX cache → \(L("baseband channel impairment")) → FM demodulation → \(model.renderedSSTV.mode.rawValue) \(L("reconstruction"))" : L("Source ICC → LUT color transform → LUT Mix → Grain → procedural light leak → sRGB display"))
+            if model.tool == .sstv { Text(model.tool == .sstv ? "\(L("Fit")) \(model.renderedSSTV.mode.dimensions) → TX cache → \(L("baseband channel impairment")) → FM demodulation → \(model.renderedSSTV.mode.rawValue) \(L("reconstruction"))" : L("Source ICC → LUT color transform → LUT Mix → Grain → procedural light leak → sRGB display"))
                 .font(.caption2).foregroundStyle(.secondary)
             }
-            if model.tool == .film && model.renderedPreset?.role == "sceneToDisplay" {
+            if model.tool == .film && model.settings.laboratory == nil && model.renderedPreset?.role == "sceneToDisplay" {
                 Text(L("PoLUT: adjust pre-LUT exposure to place middle gray; Adobe RGB output is gamut-compressed to sRGB. JPEG already has tone mapping, so scene light is approximate."))
                     .font(.caption).foregroundStyle(.orange)
             }
-            if model.tool != .tv && model.tool != .radio { Divider()
+            if model.tool == .sstv { Divider()
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 300),alignment: .leading)],alignment: .leading,spacing: 12) {
                 ForEach(parameters,id: \.0) { name,value in
                     HStack { Text(name).foregroundStyle(.secondary); Spacer(); Text(value).monospacedDigit() }
@@ -1065,6 +1050,10 @@ struct ContentView: View {
             }
             }
         }.id(languageStore.language).padding(20).frame(minWidth: 1000,minHeight: 760)
+            // Top only: with the native drag surface in the header the window
+            // no longer reports the title bar as movable background, so the
+            // safe-area inset reappears. Ignoring it again pushes the header
+            // back up and restores the pre-drag-refactor title-bar height.
             .ignoresSafeArea(.container, edges: .top)
             .background { WorkspaceGlassBackground().ignoresSafeArea() }
             .preferredColorScheme(.dark)
@@ -1073,7 +1062,15 @@ struct ContentView: View {
             .navigationTitle(model.sessionURL?.lastPathComponent ?? L("AnaLine"))
             .environment(\.locale, Locale(identifier: languageStore.language.rawValue))
             .task { model.start() }
-            .onDisappear { model.stopTransmission(); model.pauseTVPlayback() }
+            .onAppear {
+                // TEMPORARY profiling hook: ANALINE_TOOL=radio opens the radio
+                // page so the real app can be sampled in that state.
+                if let name = ProcessInfo.processInfo.environment["ANALINE_TOOL"],
+                   let tool = EditingTool.allCases.first(where: { $0.rawValue.caseInsensitiveCompare(name) == .orderedSame }) {
+                    model.tool = tool
+                }
+            }
+            .onDisappear { model.stopTransmission(); model.pauseTVPlayback(); model.tape.pause() }
             .onPasteCommand(of: [.image, .fileURL]) { _ in model.pasteImage() }
     }
 }

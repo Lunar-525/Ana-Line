@@ -3,6 +3,7 @@ import SwiftUI
 extension EditingTool {
     var logoAccentColor: Color {
         switch self {
+        case .tape: Color(red: 130/255, green: 168/255, blue: 245/255)
         case .film: Color(red: 239/255, green: 170/255, blue: 113/255)
         case .tv: Color(red: 234/255, green: 212/255, blue: 119/255)
         case .radio: Color(red: 184/255, green: 161/255, blue: 242/255)
@@ -41,6 +42,7 @@ struct AnaLineLogo: View {
         case .sstv: LogoPaths.sstv
         case .tv: LogoPaths.tv
         case .radio: LogoPaths.radio
+        case .tape: LogoPaths.tape
         case nil: LogoPaths.master
         }
     }
@@ -82,6 +84,136 @@ private struct LogoStroke: View {
 }
 
 private enum LogoPaths {
+    static let tape: [Path] = [
+        Path { p in
+            p.move(to: CGPoint(x: 25, y: 80))
+            p.addLine(to: CGPoint(x: 48, y: 0))
+            p.addLine(to: CGPoint(x: 72, y: 0))
+            p.addLine(to: CGPoint(x: 90, y: 62))
+            p.addLine(to: CGPoint(x: 124, y: 62))
+            p.addLine(to: CGPoint(x: 124, y: 80))
+            p.addLine(to: CGPoint(x: 75, y: 80))
+            p.addLine(to: CGPoint(x: 71, y: 62))
+            p.addLine(to: CGPoint(x: 48, y: 62))
+            p.addLine(to: CGPoint(x: 44, y: 80))
+            p.closeSubpath()
+            p.move(to: CGPoint(x: 52, y: 46))
+            p.addLine(to: CGPoint(x: 67, y: 46))
+            p.addLine(to: CGPoint(x: 60, y: 18))
+            p.closeSubpath()
+            p.move(to: CGPoint(x: 104, y: 80))
+            p.addLine(to: CGPoint(x: 104, y: 0))
+            p.addLine(to: CGPoint(x: 124, y: 0))
+            p.addLine(to: CGPoint(x: 152, y: 48))
+            p.addLine(to: CGPoint(x: 152, y: 0))
+            p.addLine(to: CGPoint(x: 170, y: 0))
+            p.addLine(to: CGPoint(x: 170, y: 80))
+            p.addLine(to: CGPoint(x: 150, y: 80))
+            p.addLine(to: CGPoint(x: 122, y: 32))
+            p.addLine(to: CGPoint(x: 122, y: 80))
+            p.closeSubpath()
+        }.applying(slant),
+        Path { p in
+            p.move(to: CGPoint(x: 179, y: 80))
+            p.addLine(to: CGPoint(x: 202, y: 0))
+            p.addLine(to: CGPoint(x: 226, y: 0))
+            p.addLine(to: CGPoint(x: 249, y: 80))
+            p.addLine(to: CGPoint(x: 229, y: 80))
+            p.addLine(to: CGPoint(x: 225, y: 62))
+            p.addLine(to: CGPoint(x: 202, y: 62))
+            p.addLine(to: CGPoint(x: 198, y: 80))
+            p.closeSubpath()
+            p.move(to: CGPoint(x: 206, y: 46))
+            p.addLine(to: CGPoint(x: 221, y: 46))
+            p.addLine(to: CGPoint(x: 214, y: 18))
+            p.closeSubpath()
+        }.applying(slant),
+        Path { p in
+            p.move(to: CGPoint(x: 323, y: 0))
+            p.addLine(to: CGPoint(x: 343, y: 0))
+            p.addLine(to: CGPoint(x: 343, y: 50))
+            p.addLine(to: CGPoint(x: 355, y: 62))
+            p.addLine(to: CGPoint(x: 414, y: 62))
+            p.addLine(to: CGPoint(x: 414, y: 80))
+            p.addLine(to: CGPoint(x: 341, y: 80))
+            p.addLine(to: CGPoint(x: 323, y: 62))
+            p.closeSubpath()
+            p.move(to: CGPoint(x: 394, y: 0))
+            p.addLine(to: CGPoint(x: 414, y: 0))
+            p.addLine(to: CGPoint(x: 414, y: 80))
+            p.addLine(to: CGPoint(x: 394, y: 80))
+            p.closeSubpath()
+        }.applying(slant),
+        Path { p in
+            p.move(to: CGPoint(x: 423, y: 80))
+            p.addLine(to: CGPoint(x: 423, y: 0))
+            p.addLine(to: CGPoint(x: 443, y: 0))
+            p.addLine(to: CGPoint(x: 471, y: 48))
+            p.addLine(to: CGPoint(x: 471, y: 0))
+            p.addLine(to: CGPoint(x: 489, y: 0))
+            p.addLine(to: CGPoint(x: 489, y: 80))
+            p.addLine(to: CGPoint(x: 469, y: 80))
+            p.addLine(to: CGPoint(x: 441, y: 32))
+            p.addLine(to: CGPoint(x: 441, y: 80))
+            p.closeSubpath()
+        }.applying(slant),
+        Path { p in
+            p.move(to: CGPoint(x: 498, y: 0))
+            p.addLine(to: CGPoint(x: 558, y: 0))
+            p.addLine(to: CGPoint(x: 558, y: 17))
+            p.addLine(to: CGPoint(x: 518, y: 17))
+            p.addLine(to: CGPoint(x: 518, y: 31))
+            p.addLine(to: CGPoint(x: 552, y: 31))
+            p.addLine(to: CGPoint(x: 552, y: 48))
+            p.addLine(to: CGPoint(x: 518, y: 48))
+            p.addLine(to: CGPoint(x: 518, y: 63))
+            p.addLine(to: CGPoint(x: 558, y: 63))
+            p.addLine(to: CGPoint(x: 558, y: 80))
+            p.addLine(to: CGPoint(x: 498, y: 80))
+            p.closeSubpath()
+        }.applying(slant),
+        Path { p in
+            p.move(to: CGPoint(x: 261.075, y: 23))
+            p.addLine(to: CGPoint(x: 271.075, y: 23))
+            p.addLine(to: CGPoint(x: 279.691, y: 30))
+            p.addLine(to: CGPoint(x: 282, y: 40))
+            p.addLine(to: CGPoint(x: 278.154, y: 45))
+            p.addLine(to: CGPoint(x: 289.154, y: 45))
+            p.addLine(to: CGPoint(x: 283, y: 40))
+            p.addLine(to: CGPoint(x: 280.691, y: 30))
+            p.addLine(to: CGPoint(x: 286.075, y: 23))
+            p.addLine(to: CGPoint(x: 296.075, y: 23))
+            p.addLine(to: CGPoint(x: 304.691, y: 30))
+            p.addLine(to: CGPoint(x: 307, y: 40))
+            p.addLine(to: CGPoint(x: 301.616, y: 47))
+            p.addLine(to: CGPoint(x: 297.616, y: 47))
+            p.addLine(to: CGPoint(x: 304.232, y: 54))
+            p.addLine(to: CGPoint(x: 305.617, y: 60))
+            p.addLine(to: CGPoint(x: 268.617, y: 60))
+            p.addLine(to: CGPoint(x: 267.232, y: 54))
+            p.addLine(to: CGPoint(x: 270.616, y: 47))
+            p.addLine(to: CGPoint(x: 266.616, y: 47))
+            p.addLine(to: CGPoint(x: 258, y: 40))
+            p.addLine(to: CGPoint(x: 255.691, y: 30))
+            p.closeSubpath()
+            p.move(to: CGPoint(x: 264.922, y: 31))
+            p.addLine(to: CGPoint(x: 266.769, y: 39))
+            p.addLine(to: CGPoint(x: 272.769, y: 39))
+            p.addLine(to: CGPoint(x: 270.922, y: 31))
+            p.closeSubpath()
+            p.move(to: CGPoint(x: 289.922, y: 31))
+            p.addLine(to: CGPoint(x: 291.769, y: 39))
+            p.addLine(to: CGPoint(x: 297.769, y: 39))
+            p.addLine(to: CGPoint(x: 295.922, y: 31))
+            p.closeSubpath()
+            p.move(to: CGPoint(x: 274.77, y: 52))
+            p.addLine(to: CGPoint(x: 273.463, y: 55))
+            p.addLine(to: CGPoint(x: 298.463, y: 55))
+            p.addLine(to: CGPoint(x: 295.77, y: 52))
+            p.closeSubpath()
+        }.applying(slant),
+    ]
+
     private static let slant = CGAffineTransform(a: 1, b: 0, c: -0.2308681911, d: 1, tx: 27, ty: 24)
     static let master: [Path] = [
         Path { p in

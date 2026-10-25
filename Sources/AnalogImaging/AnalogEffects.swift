@@ -3,6 +3,8 @@ import AnalogCore
 
 /// GPU procedural effects. All color kernels preserve premultiplied source alpha.
 public final class AnalogEffects {
+    private lazy var laboratory = try? FilmLabRenderer()
+    private let processRenderer: FilmProcessRenderer
     private let mixKernel: CIColorKernel
     private let grainRenderer: FilmGrainRenderer
     private let grainKernel: CIColorKernel
@@ -19,6 +21,7 @@ public final class AnalogEffects {
             return mix(original, graded, amount);
         }
         """)
+        processRenderer = try FilmProcessRenderer()
         grainRenderer = try FilmGrainRenderer()
         grainKernel = try compile("""
         kernel vec4 grainReconstruction(__sample image, __sample coverage, float amount) {
@@ -82,23 +85,32 @@ public final class AnalogEffects {
     }
     public func apply(original: CIImage,graded: CIImage,settings: EffectSettings) throws -> CIImage {
         let s = settings.validated, extent = original.extent
+        if let session = s.laboratory {
+            guard let laboratory else { throw CubeLUT.ParseError.invalid("Cannot initialize film laboratory") }
+            return try laboratory.render(original,session: session,display: FilmLabDisplay(rawValue: s.laboratoryDisplay) ?? .appearance)
+        }
         func result(_ value: CIImage?) throws -> CIImage {
             guard let value else { throw CubeLUT.ParseError.invalid("Effect rendering failed") }
             return value.cropped(to: extent)
         }
         var image = s.lutMix == 0 ? original : s.lutMix == 1 ? graded
             : try result(mixKernel.apply(extent: extent,arguments: [original,graded,s.lutMix]))
-        if s.grain.amount > 0 {
-            let coverage = try grainRenderer.render(image,settings: s.grain)
-            image = try result(grainKernel.apply(extent: extent,arguments: [image,coverage,s.grain.amount]))
-        }
-        if s.leak.amount > 0 {
+        func applyLeak(_ input: CIImage) throws -> CIImage {
+            guard s.leak.amount > 0 else { return input }
             let leak = s.leak
-            image = try result(leakKernel.apply(extent: extent,arguments: [image,
+            return try result(leakKernel.apply(extent: extent,arguments: [input,
                 CIVector(x: extent.width,y: extent.height),CIVector(x: CGFloat(leak.x),y: CGFloat(leak.y)),
                 leak.width,leak.length,leak.rotation * .pi/180,leak.softness,leak.irregularity,
                 leak.hue/360,leak.amount,Float(leak.seed % 65521)]))
         }
+        if s.process.enabled {
+            image = try processRenderer.render(applyLeak(image),settings: s.process)
+        }
+        if s.grain.amount > 0 {
+            let coverage = try grainRenderer.render(image,settings: s.grain)
+            image = try result(grainKernel.apply(extent: extent,arguments: [image,coverage,s.grain.amount]))
+        }
+        if !s.process.enabled { image = try applyLeak(image) }
         return image
     }
 }

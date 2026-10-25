@@ -1,0 +1,127 @@
+{
+  "channel" : {
+    "automaticFineTuning" : true,
+    "automaticGain" : true,
+    "carrierToNoiseDB" : 45,
+    "decoder" : {
+      "chromaLeakage" : 0,
+      "combFailure" : 0,
+      "palDelayLine" : true,
+      "separation" : "notch"
+    },
+    "echoDelayMicroseconds" : 0.34481218,
+    "echoGain" : 0.25,
+    "echoPhaseDegrees" : 0,
+    "execution" : "accelerated",
+    "frontEnd" : {
+      "agcEnabled" : false,
+      "enabled" : false,
+      "gainDB" : 0,
+      "ifAMPMDegrees" : 0,
+      "ifHardness" : 0.5,
+      "ifSaturationDB" : 12,
+      "inputAMPMDegrees" : 0,
+      "inputHardness" : 0.5,
+      "inputSaturationDB" : 12,
+      "soundDetection" : "splitSound",
+      "soundNotchPolicy" : "suppressed",
+      "videoLowpassEnabled" : false
+    },
+    "manualGainDB" : 0,
+    "performance" : {
+      "afcLockedDecimation" : 8,
+      "amplifierAntiAliasRadius" : 12,
+      "amplifierCouplingStride" : 4,
+      "amplifierTablePoints" : 2048,
+      "carrierPLLStride" : 2,
+      "noiseGenerator" : "parallelBoxMuller",
+      "soundExtractionRadius" : 12,
+      "soundResamplerSinglePrecision" : true,
+      "soundSynthesisIntegerSchedule" : true,
+      "soundUpsamplePhases" : 512,
+      "soundUpsampleRadius" : 6,
+      "spectrumWindows" : 2,
+      "sustainedLossFrames" : 8
+    },
+    "propagation" : {
+      "antenna" : "Yagi",
+      "antennaElevationDegrees" : -35.885868,
+      "antennaGainDB" : 12,
+      "distanceKm" : 10,
+      "enabled" : true,
+      "frequencyMHz" : 600,
+      "groundReflection" : 0.3,
+      "receiverHeightM" : 20,
+      "refractionK" : 1.3333334,
+      "ridgeEnabled" : true,
+      "ridgeHeightM" : 92.60611,
+      "ridgePosition" : 0.4625924,
+      "transmitterHeightM" : 120,
+      "weather" : {
+        "clutter" : 0.5,
+        "enabled" : true,
+        "fogGramsM3" : 0,
+        "humidityPercent" : 50,
+        "ionization" : 0,
+        "lightning" : 1,
+        "lightningRatePerMinute" : 8.704683,
+        "rainMMHour" : 29.1375,
+        "snowMMHour" : 0,
+        "sunlight" : 0.5,
+        "temperatureC" : 20
+      }
+    },
+    "receiverDamage" : {
+      "agcEnabled" : false,
+      "agcOvershoot" : 0,
+      "agcPictureSensitivity" : 0,
+      "agcResponseMS" : 250,
+      "horizontalDeadZoneUS" : 0,
+      "horizontalJitterUS" : 0.79704857,
+      "horizontalOscillatorPPM" : 0,
+      "horizontalResponseMS" : 1,
+      "syncEnabled" : true,
+      "verticalCaptureLines" : 8,
+      "verticalHoldHz" : 0
+    },
+    "rfBandwidthMHz" : 6,
+    "seed" : 42,
+    "signalDB" : 0,
+    "transmitter" : {
+      "audioDriveDB" : 0,
+      "backoffDB" : 6,
+      "enabled" : false,
+      "encoder" : {
+        "burstAmplitude" : 1,
+        "burstDriftDegrees" : 0,
+        "burstDriftHz" : 0.25,
+        "burstPhaseDegrees" : 0,
+        "differentialGain" : 0,
+        "differentialPhaseDegrees" : 0,
+        "enabled" : true
+      },
+      "hardness" : 0.5,
+      "loadVSWR" : 1,
+      "phaseDegrees" : 0,
+      "powerDB" : 0,
+      "sharedCoupling" : 0,
+      "vsb" : {
+        "enabled" : true,
+        "groupDelayNS" : 0,
+        "peakingDB" : 0,
+        "transitionMHz" : 0.2
+      }
+    },
+    "tuningOffsetKHz" : 0
+  },
+  "format" : "AnaLine Terrestrial Session",
+  "muted" : false,
+  "position" : 146.64649999999997,
+  "standard" : "ntsc",
+  "version" : 1,
+  "video" : {
+    "name" : "HandInHand.mp4",
+    "path" : "/Users/fanxuancheng/Documents/Ana-LIne/Assets/HandInHand.mp4",
+    "relativePath" : "HandInHand.mp4"
+  }
+}

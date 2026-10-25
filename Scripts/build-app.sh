@@ -31,6 +31,8 @@ cp Design/Icon/AnaLine.icns "$APP/Resources/AnaLine.icns"
 cp -R Assets/FilmLuts "$APP/Resources/"
 cp -R Assets/LUTLibrary "$APP/Resources/"
 cp LICENSE THIRD_PARTY_NOTICES.md "$APP/Resources/"
+mkdir -p "$APP/Resources/ThirdParty/CHOWTape"
+cp ThirdParty/CHOWTape/LICENSE ThirdParty/CHOWTape/NOTICE.md "$APP/Resources/ThirdParty/CHOWTape/"
 # SwiftPM places processed localized resources in a companion bundle.
 # Embed it in the app so Settings language selection works in the packaged build.
 RESOURCE_BUNDLE="$BIN_DIR/AnaLine_AnalogGUI.bundle"
@@ -38,6 +40,13 @@ if [ -d "$RESOURCE_BUNDLE" ]; then
     # Flatten the SwiftPM resource bundle into the application bundle so
     # SwiftUI's LocalizedStringKey lookup can find zh-Hans.lproj directly.
     cp -R "$RESOURCE_BUNDLE/Contents/Resources/." "$APP/Resources/"
+fi
+# Flatten the AnalogCore resource bundle too, so TapeFormulations.json lands in
+# Contents/Resources where TapeFormulationLibrary searches for it. Doing this
+# here avoids relying on Bundle.module, which traps in a packaged app.
+CORE_BUNDLE="$BIN_DIR/AnaLine_AnalogCore.bundle"
+if [ -d "$CORE_BUNDLE" ]; then
+    cp -R "$CORE_BUNDLE/Contents/Resources/." "$APP/Resources/"
 fi
 codesign --force --sign - "build/AnaLine.app"
 # Replacing bundle contents leaves the outer directory timestamp unchanged.

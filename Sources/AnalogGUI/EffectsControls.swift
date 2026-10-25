@@ -77,6 +77,39 @@ struct EffectsControls: View {
                         }
                     }.padding(.top,6)
                 }
+                GroupBox("黑白负片 · 冲洗流程") {
+                    VStack(alignment: .leading,spacing: 10) {
+                        Toggle("启用冲洗模拟",isOn: $model.settings.process.enabled)
+                        Text("曝光 → 显影 → 停显 → 定影 → 水洗 → 干燥；以扫描正像显示。参数为艺术模拟，并非化学配方。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if model.settings.process.enabled {
+                            DisclosureGroup("曝光") {
+                                ParameterSlider(name: "曝光 · EV",value: $model.settings.process.exposureEV,defaultValue: 0,range: -4...4)
+                            }
+                            DisclosureGroup("显影") {
+                                ParameterSlider(name: "显影强度",value: $model.settings.process.development,defaultValue: 1,range: 0.25...2)
+                                ParameterSlider(name: "搅动均匀度",value: $model.settings.process.agitation,defaultValue: 1,range: 0...1)
+                            }
+                            DisclosureGroup("停显") {
+                                ParameterSlider(name: "停显充分度",value: $model.settings.process.stop,defaultValue: 1,range: 0...1)
+                            }
+                            DisclosureGroup("定影") {
+                                ParameterSlider(name: "定影充分度",value: $model.settings.process.fixation,defaultValue: 1,range: 0...1)
+                            }
+                            DisclosureGroup("水洗") {
+                                ParameterSlider(name: "水洗充分度",value: $model.settings.process.wash,defaultValue: 1,range: 0...1)
+                            }
+                            DisclosureGroup("干燥") {
+                                ParameterSlider(name: "干燥洁净度",value: $model.settings.process.drying,defaultValue: 1,range: 0...1)
+                            }
+                            Button("重新生成冲洗痕迹") { model.settings.process.seed &+= 1 }
+                            Button("恢复正常冲洗") {
+                                model.settings.process = FilmProcessSettings()
+                                model.settings.process.enabled = true
+                            }
+                        }
+                    }.padding(.top,6)
+                }
                 GroupBox(L("Grain")) {
                     VStack(spacing: 10) {
                         ParameterSlider(name: L("Grain Amount"),value: $model.settings.grain.amount,defaultValue: EffectSettings().grain.amount,range: 0...1,percent: true)

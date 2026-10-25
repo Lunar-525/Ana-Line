@@ -386,3 +386,46 @@
 
 "Fast · accelerated simulation with validated precision trade-offs" = "Fast · 加速模拟，采用经验证的精度取舍";
 "Full · reference precision for reproducible simulation" = "Full · 参考精度，可复现模拟结果";
+
+/* Tape mode */
+"Choose Audio…" = "选择音频…";
+"Real-time tape processing" = "实时磁带处理";
+"TYPE I · 4.76 cm/s · STEREO" = "I 类带 · 4.76 cm/s · 立体声";
+"Import audio to begin" = "导入音频开始试听";
+"Rewind" = "回到开头";
+"Record level" = "录音电平";
+"Output level" = "输出电平";
+"Tape hiss" = "磁带底噪";
+"Original audio (bypass)" = "原声对比（旁路）";
+"0 dB tape reference = −18 dBFS peak sine. Raise record level to drive the tape." = "磁带 0 dB 参考对应峰值 −18 dBFS 的正弦波。提高录音电平可增加饱和。";
+"Input" = "输入";
+"Output" = "输出";
+"DSP %.2f ms / 21.33 ms block" = "处理 %.2f ms / 每块 21.33 ms";
+"Output clips · reduce output level" = "输出过载 · 请降低输出电平";
+"CHF60 approximation · Based on public CHF measurements; not a verified replica of a specific CHF60 sample." = "CHF60 近似模型 · 依据公开 CHF 实测调整失真、灵敏度与底噪，尚未验证为特定 CHF60 样本的精确复刻。";
+"Could not decode this audio file." = "无法解码此音频文件。";
+
+/* FF8 front panel */
+"REC opens an audio file" = "按 REC 打开音频文件";
+"Tape position" = "磁带位置";
+"REW / FFWD: 20× · STOP keeps position · REC opens audio" = "REW / FFWD：20 倍快退快进 · STOP 保留位置 · REC 打开音频";
+"Stereo peak meter" = "双声道峰值电平表";
+"Time counter" = "时间计数器";
+"Reset time counter" = "时间计数器清零";
+
+"Head health" = "磁头健康度";
+"Tape health" = "磁带健康度";
+"Lower head health reduces treble and level; lower tape health adds dullness, hiss and level fluctuations." = "磁头健康度降低会损失高频和电平；磁带健康度降低会使声音变暗、底噪增大并产生电平起伏。";
+
+"CRT display" = "CRT 显示器";
+"HDR phosphor brightness" = "HDR 荧光粉亮度";
+"Phosphor peak" = "荧光粉峰值";
+"HDR uses available display headroom. Preview only." = "HDR 使用屏幕可用亮度余量，仅作用于预览。";
+"CRT display and HDR phosphor brightness" = "CRT 显示器与 HDR 荧光粉亮度";
+
+"Automatic scanlines" = "自动扫描线";
+"Scanline count" = "扫描线数量";
+"Automatic scanlines follow the source height. Manual range: 120–1080." = "自动模式跟随源画面高度，手动可设为 120–1080 条。";
+
+"Phosphor pitch" = "荧光粉间距";
+"Phosphor mask" = "荧光粉栅格";

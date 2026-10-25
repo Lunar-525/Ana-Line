@@ -1,0 +1,17 @@
+Radio full-app trackpad probe, 2026-10-14 (Asia/Shanghai)
+Packaged Release application; full ContentView, glass background, radio playback.
+Window request: 1100 x 760. Three alternating fast flicks per configuration.
+25 ms continuous-pixel input followed by approximately 350 ms momentum.
+CADisplayLink callback intervals, not GPU presentation timestamps.
+The following preliminary run checks activation/occlusion at each case END only.
+The later strict probe checks every event and waits for activation to settle.
+Do not treat this preliminary run as a certification of uninterrupted foreground visibility.
+
+RADIO_APP_FLICK_START pid=41953 drag=native version=6ACED0C5
+RADIO_APP_FLICK round=1 tx=6 rx=2 drag=native range=543 travel=2188 momentum=1282 frames=142 frameP95=15.48 frameP99=33.21 frameWorst=228.39 underruns=0 active=no visible=no valid=no
+RADIO_APP_FLICK round=1 tx=7 rx=2 drag=native range=543 travel=1692 momentum=670 frames=169 frameP95=16.82 frameP99=109.32 frameWorst=187.84 underruns=0 active=yes visible=yes valid=yes
+RADIO_APP_FLICK round=1 tx=8 rx=2 drag=native range=543 travel=1740 momentum=1186 frames=158 frameP95=16.66 frameP99=74.99 frameWorst=91.57 underruns=0 active=yes visible=yes valid=yes
+RADIO_APP_FLICK round=2 tx=6 rx=2 drag=native range=543 travel=1763 momentum=1244 frames=159 frameP95=11.16 frameP99=16.67 frameWorst=17.44 underruns=0 active=yes visible=yes valid=yes
+RADIO_APP_FLICK round=2 tx=7 rx=2 drag=native range=543 travel=1594 momentum=1056 frames=165 frameP95=10.38 frameP99=16.59 frameWorst=17.11 underruns=0 active=yes visible=yes valid=yes
+RADIO_APP_FLICK round=2 tx=8 rx=2 drag=native range=543 travel=1708 momentum=1210 frames=164 frameP95=9.70 frameP99=16.50 frameWorst=18.64 underruns=0 active=yes visible=yes valid=yes
+RADIO_APP_FLICK_DONE

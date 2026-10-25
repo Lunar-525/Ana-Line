@@ -29,6 +29,7 @@ struct TVControls: View {
     init(state: TVControlState) { self.model = state }
     var body: some View {
         HStack(spacing: 10) {
+            TVCRTControls()
             TVBroadcastStandardSwitch(selection: $model.tvStandard)
             TVSimulationProfileSwitch(selection: Binding(
                 get: { model.tvChannel.performance == .mobile },

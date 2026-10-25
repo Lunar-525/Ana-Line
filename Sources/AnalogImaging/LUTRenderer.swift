@@ -65,12 +65,12 @@ public actor LUTRenderer {
         while order.count > 8 { cache.removeValue(forKey: order.removeFirst()) }
         return Preview(data: data,seconds: Date().timeIntervalSince(start),cached: false)
     }
-    private func grade(_ preset: LUTPreset,library: LUTLibrary,exposureEV: Float = 0) async throws -> CIImage {
+    private func grade(_ preset: LUTPreset,library: LUTLibrary,exposureEV: Float = 0,imageOverride: CIImage? = nil) async throws -> CIImage {
         let token = generation
         let exposure: Float = preset.role == "sceneToDisplay" ? exposureEV : 0
         let key = preset.id+":\(exposure.bitPattern)"
-        guard let image = source else { throw CocoaError(.fileReadUnknown) }
-        if let image = grades[key] {
+        guard let image = imageOverride ?? source else { throw CocoaError(.fileReadUnknown) }
+        if imageOverride == nil, let image = grades[key] {
             gradeOrder.removeAll { $0 == key }; gradeOrder.append(key)
             return image
         }
@@ -91,24 +91,50 @@ public actor LUTRenderer {
             throw CocoaError(.coderInvalidValue)
         }
         let materialized = CIImage(cgImage: cg)
-        grades[key] = materialized; gradeOrder.append(key)
+        if imageOverride == nil { grades[key] = materialized; gradeOrder.append(key) }
         while gradeOrder.count > 8 { grades.removeValue(forKey: gradeOrder.removeFirst()) }
         return materialized
     }
     public func renderImage(_ preset: LUTPreset?,library: LUTLibrary,settings: EffectSettings) async throws -> DisplayPreview {
         let start = Date(), token = generation
         guard let original = source else { throw CocoaError(.fileReadUnknown) }
-        var graded = original
-        if let preset, settings.validated.lutMix > 0 {
-            graded = try await grade(preset,library: library,exposureEV: settings.validated.lutExposureEV)
+        if effects == nil { effects = try AnalogEffects() }
+        var output: CIImage
+        if let session = settings.laboratory {
+            output = try effects!.apply(original: original,graded: original,settings: settings)
+            if session.stage == .scan, settings.laboratoryDisplay == 0, let preset, settings.lutMix > 0 {
+                let graded = try await grade(preset,library: library,imageOverride: output)
+                output = output.applyingFilter("CIDissolveTransition",parameters: [kCIInputTargetImageKey: graded,kCIInputTimeKey: settings.validated.lutMix])
+            }
+        } else {
+            var graded = original
+            if let preset, settings.validated.lutMix > 0 {
+                graded = try await grade(preset,library: library,exposureEV: settings.validated.lutExposureEV)
+            }
+            output = try effects!.apply(original: original,graded: graded,settings: settings)
         }
         try Task.checkCancellation()
         guard token == generation else { throw CancellationError() }
-        if effects == nil { effects = try AnalogEffects() }
-        let output = try effects!.apply(original: original,graded: graded,settings: settings)
         guard let cg = context!.createCGImage(output,from: original.extent,format: .RGBA8,colorSpace: srgb) else {
             throw CocoaError(.coderInvalidValue)
         }
         return DisplayPreview(image: cg,seconds: Date().timeIntervalSince(start))
     }
+    /// Export at original resolution; preview and export share the exact operation log.
+    public func exportFilmLab(source url: URL,to destination: URL,preset: LUTPreset?,library: LUTLibrary,settings: EffectSettings) async throws {
+        guard let session = settings.laboratory, session.stage == .scan,
+              let full = CIImage(contentsOf: url,options: [.applyOrientationProperty: true]) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        if context == nil { context = CIContext(options: [.workingColorSpace: srgb,.outputColorSpace: srgb]) }
+        if effects == nil { effects = try AnalogEffects() }
+        var snapshot = settings; snapshot.laboratoryDisplay = 0
+        var output = try effects!.apply(original: full,graded: full,settings: snapshot)
+        if let preset, settings.validated.lutMix > 0 {
+            let graded = try await grade(preset,library: library,imageOverride: output)
+            output = output.applyingFilter("CIDissolveTransition",parameters: [kCIInputTargetImageKey: graded,kCIInputTimeKey: settings.validated.lutMix])
+        }
+        try context!.writePNGRepresentation(of: output,to: destination,format: .RGBA8,colorSpace: srgb)
+    }
+
 }

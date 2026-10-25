@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-AnaLine 是一个用 Swift 编写的模拟影像实验工具：它在 macOS 上把「信号损伤」做成可交互的链路，而不是滤镜。项目提供四种模式——胶片效果（Film Damage）、慢扫描电视（SSTV）、地面模拟电视（Terrestrial）与单声道 FM 收发仿真（Radio）。所有模型都是**可控的创意仿真**，不是经过实测标定的胶片系统，也不是通过标准一致性认证的广播设备。
+AnaLine 是一个主要用 Swift 编写的模拟影像与音频实验工具：它在 macOS 上把「信号损伤」做成可交互的链路，而不是滤镜。项目提供五种模式——胶片效果（Film Damage）、慢扫描电视（SSTV）、地面模拟电视（Terrestrial）、共享无线电环境（Radio）与磁带音频（Tape）。所有模型都是**可控的创意仿真**，不是经过实测标定的胶片系统，也不是通过标准一致性认证的广播设备。
 
 **地面模拟电视是项目的重心。** 它把一帧画面编码为 CVBS，经负极性 AM／VSB 调制，与单声道 FM 伴音合成到同一个射频频道，再完整解调回来——中途经过地形传播、天气、接收机前端、AGC、载波恢复与同步重建。这条链路的仿真引擎叫 **AsyncAlter**。
 
@@ -20,7 +20,7 @@ AnaLine 是一个用 Swift 编写的模拟影像实验工具：它在 macOS 上�
 | **Film Damage** | LUT 调色（4 个资源库共 553 个预设）、程序颗粒、程序漏光；完整 ICC 与色彩空间处理链 |
 | **SSTV** | Robot36、Martin M1、Scottie S1、PD120；逐行传输、时变信道、可接麦克风的实时 TX/RX |
 | **Terrestrial** | PAL-D/K 与 NTSC-M 的 VSB 图像 + FM 伴音完整收发链路，含传播、天气与接收机 |
-| **Radio** | 单声道 FM 收发仿真：预加重、连续相位 FM、IQ 噪声、调谐、IF 与鉴频 |
+| **Radio** | 固定 8 TX / 2 RX 的共享无线电环境（每台自带电源键）：真实 RF 叠加串台、传播与反射、五模式自定义调制 / 解调、双 RX 瀑布图与可缩放 RF 全景 |
 
 ---
 
@@ -222,9 +222,13 @@ RGB → CVBS → 负极性 AM / VSB → 图像与伴音功放 → 线性合成
 
 ---
 
+# Tape：CHF60 实时音频
+
+切换到 **Tape**，通过 FF8 风格面板的 **REC** 打开音频文件，按 **PLAY** 实时处理立体声。支持 REW / FFWD 连续快退快进、STOP 保留位置、PAUSE、MUTE、TIME COUNTER 清零、双声道峰值表及右下角 L/R 输入电平滑杆；保留输出电平、底噪与原声对比。Tape 标志和蓝色采用项目设计文件。CHF60 为参考公开 CHF 数据的近似模型，尚未验证为具体实物的精确复刻。使用边界、标定和测试见 [磁带模型说明](Docs/Tape-CHF60.md)。
+
 # 安装与构建
 
-要求 macOS 13 或更新版本，以及支持 Swift 6 的 Xcode 或 Command Line Tools。Swift 包**没有第三方依赖**；部分 LUT 首次使用时联网下载并按 Git blob SHA 校验。
+要求 macOS 13 或更新版本，以及支持 Swift 6 的 Xcode 或 Command Line Tools。Swift 包无需下载外部构建依赖，磁带 DSP 内含 GPLv3 的 CHOW 衍生代码（见第三方许可说明）；部分 LUT 首次使用时联网下载并按 Git blob SHA 校验。
 
 ```sh
 ./build.sh              # Release，输出 build/AnaLine.app
@@ -242,7 +246,7 @@ swift run -c release AnaLine            # 启动 GUI
 swift run -c release AnaLine /路径/image.jpg
 swift test                              # 全部测试
 swift test -c release --filter TVPerformanceTests   # 性能基准
-swift test --filter FMTests                         # Radio 链路
+swift test -c release --filter RadioSceneTests      # 无线电环境链路
 ```
 
 SSTV 的麦克风输入与 TX 声音监听需要运行打包后的 `build/AnaLine.app`（需要 Info.plist 中的用途声明与本地 ad-hoc 签名）。Terrestrial 需要本机安装 **FFmpeg 与 ffprobe**；它们作为外部程序调用，不随项目分发。
@@ -266,7 +270,7 @@ swift run -c release analog input.jpg output.png recipe.json
 
 | 路径 | 内容 |
 | --- | --- |
-| `Sources/AnalogCore` | 全部仿真核心：CVBS／VSB 链路、传播与天气、SSTV、Radio FM、LUT 解析 |
+| `Sources/AnalogCore` | 全部仿真核心：CVBS／VSB 链路、传播与天气、SSTV、Radio 五模式与共享场景、LUT 解析 |
 | `Sources/AnalogImaging` | 渲染与媒体：Metal 颗粒、Hald／CUBE 渲染、FFmpeg 进程、导出 |
 | `Sources/AnalogGUI` | SwiftUI 界面：四种模式、机架控件、传播场景、频谱与瀑布图 |
 | `Sources/analog` | 命令行图片处理器 |
@@ -279,9 +283,10 @@ swift run -c release analog input.jpg output.png recipe.json
 # 文档
 
 - [使用说明](Docs/Usage.md)——四种模式的完整操作说明与算法限制
+- [引擎边界](Docs/Engine-boundary.md)——AsyncAlter 的架构骨架：Runtime 管时间、Environment 管空间与传播、TX/RX 管设备与信号协议
 - [Terrestrial 技术记录](Docs/Terrestrial.md)、[统一频道设计](Docs/Unified-TV-channel.md)
 - [性能记录](Docs/Terrestrial-performance.md)、[性能原始数据](Docs/Benchmarks/)
-- [Radio FM](Docs/Radio-FM.md)、[SSTV 调研](Docs/SSTV-research.md)、[颗粒模型](Docs/Grain-model.md)
+- [Radio 调制 / 解调核心](Docs/Radio-FM.md)、[共享无线电场景](Docs/Radio-Scene.md)、[SSTV 调研](Docs/SSTV-research.md)、[颗粒模型](Docs/Grain-model.md)
 - [待处理技术债](Docs/Technical-debt.md)、[参考项目](Docs/References.md)
 
 # 许可

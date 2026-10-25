@@ -7,7 +7,8 @@ from sync_native import native_variant
 
 ROOT = Path(__file__).resolve().parent
 COLORS = {'master': (213, 237, 121), 'film': (239, 170, 113),
-          'sstv': (141, 220, 219), 'tv': (234, 212, 119), 'radio': (184, 161, 242)}
+          'sstv': (141, 220, 219), 'tv': (234, 212, 119), 'radio': (184, 161, 242),
+          'tape': (130, 168, 245)}
 
 if __name__ == '__main__':
     modes = sys.argv[1:] or ['radio']

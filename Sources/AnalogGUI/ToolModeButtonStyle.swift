@@ -11,9 +11,9 @@ struct ToolModeSwitch: View {
             Rectangle().fill(Color.white)
             Rectangle()
                 .fill(selection.logoAccentColor)
-                .frame(width: 118, height: 48)
+                .frame(width: 96, height: 48)
                 .shadow(color: .black.opacity(0.35), radius: 5, y: 2)
-                .offset(x: CGFloat(EditingTool.allCases.firstIndex(of: selection) ?? 0) * 118)
+                .offset(x: CGFloat(EditingTool.allCases.firstIndex(of: selection) ?? 0) * 96)
                 .animation(reduceMotion ? nil : .timingCurve(0.22, 0.75, 0.25, 1, duration: 0.38),
                            value: selection)
             HStack(spacing: 0) {
@@ -23,14 +23,14 @@ struct ToolModeSwitch: View {
                     } label: {
                         Text(tool.rawValue)
                             .font(.system(size: 13, weight: .medium))
-                            .frame(width: 118, height: 48)
+                            .frame(width: 96, height: 48)
                     }
                     .buttonStyle(ToolModeButtonStyle())
                     .accessibilityAddTraits(selection == tool ? .isSelected : [])
                 }
             }
         }
-        .frame(width: CGFloat(EditingTool.allCases.count) * 118, height: 48)
+        .frame(width: CGFloat(EditingTool.allCases.count) * 96, height: 48)
         .opacity(isEnabled ? 1 : 0.4)
         .accessibilityLabel(L("Tool"))
     }

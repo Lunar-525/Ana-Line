@@ -56,6 +56,8 @@ struct TVNativeKnob: NSViewRepresentable {
     final class Dial: NSControl {
         var position = 0.0 { didSet { needsDisplay = true } }
         var lower = 0.0, upper = 1.0, reset = 0.0, increment = 0.01
+        var dialLabel = ""
+        var hasHelp = false
         private var dragY: CGFloat = 0
         private var wheelRemainder = 0.0
         override var acceptsFirstResponder: Bool { isEnabled }
@@ -153,9 +155,15 @@ struct TVNativeKnob: NSViewRepresentable {
     func updateNSView(_ d: Dial,context: Context) {
         context.coordinator.binding = $value
         d.lower = Double(range.lowerBound); d.upper = Double(range.upperBound)
-        d.reset = Double(initial); d.increment = Double(step); d.position = Double(value); d.isEnabled = enabled && parentEnabled
-        d.setAccessibilityLabel(label)
-        d.setAccessibilityHelp(L("Scroll or drag to adjust · Shift for fine control · double-click to reset"))
+        d.reset = Double(initial); d.increment = Double(step)
+        // Redrawing the dial is expensive (eleven bezier ticks, a gradient rim and
+        // a shadow). SwiftUI re-runs this for every ancestor invalidation, so only
+        // touch `position` when the value really moved.
+        let next = Double(value)
+        if d.position != next { d.position = next }
+        d.isEnabled = enabled && parentEnabled
+        if d.dialLabel != label { d.dialLabel = label; d.setAccessibilityLabel(label) }
+        if !d.hasHelp { d.hasHelp = true; d.setAccessibilityHelp(L("Scroll or drag to adjust · Shift for fine control · double-click to reset")) }
     }
 }
 

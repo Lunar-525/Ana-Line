@@ -28,6 +28,46 @@ final class EffectsTests: XCTestCase {
         let mean = values.reduce(0,+)/Float(values.count)
         return values.reduce(0) { $0+($1-mean)*($1-mean) }/Float(values.count)
     }
+    func testFilmProcessLegacySettingsAndValidation() throws {
+        let legacy = try JSONDecoder().decode(EffectSettings.self,from: Data("{\"lutMix\":0.5}".utf8))
+        XCTAssertFalse(legacy.process.enabled)
+        XCTAssertEqual(legacy.lutMix,0.5)
+        var settings = legacy
+        settings.process.exposureEV = .infinity
+        settings.process.development = -10
+        settings.process.wash = 4
+        XCTAssertEqual(settings.validated.process.exposureEV,0)
+        XCTAssertEqual(settings.validated.process.development,0.25)
+        XCTAssertEqual(settings.validated.process.wash,1)
+        XCTAssertEqual(try JSONDecoder().decode(EffectSettings.self,from: JSONEncoder().encode(settings.validated)),settings.validated)
+    }
+    func testFilmProcessStagesDeterminismAndAlpha() throws {
+        let engine = try AnalogEffects(), source = image(0.25,alpha: 0.4)
+        var settings = off(); settings.process.enabled = true
+        func render(_ value: EffectSettings) throws -> [Float] {
+            read(try engine.apply(original: source,graded: source,settings: value))
+        }
+        let normal = try render(settings)
+        for key in [\FilmProcessSettings.exposureEV, \FilmProcessSettings.development,
+                    \FilmProcessSettings.agitation, \FilmProcessSettings.stop,
+                    \FilmProcessSettings.fixation, \FilmProcessSettings.wash, \FilmProcessSettings.drying] {
+            var changed = settings
+            changed.process[keyPath: key] = key == \FilmProcessSettings.exposureEV ? 1 : 0.25
+            let output = try render(changed)
+            XCTAssertGreaterThan(difference(normal,output),0.00001,"Stage: \(key)")
+            XCTAssertEqual(output,try render(changed))
+            for i in stride(from: 0,to: output.count,by: 4) {
+                XCTAssertEqual(output[i+3],normal[i+3],accuracy: 0.00001)
+                for c in 0..<3 { XCTAssertTrue(output[i+c].isFinite && output[i+c] >= 0 && output[i+c] <= output[i+3]+0.0001) }
+            }
+        }
+        settings.process.drying = 0; settings.process.wash = 0
+        let stained = try render(settings)
+        settings.process.seed += 1
+        XCTAssertGreaterThan(difference(stained,try render(settings)),0.00001)
+        let transparent = image(0,alpha: 0)
+        XCTAssertEqual(read(try engine.apply(original: transparent,graded: transparent,settings: settings)),read(transparent))
+    }
     func testMixEndpointsAndMidpoint() throws {
         let engine = try AnalogEffects(), original = image(0.25), graded = image(0.75)
         var s = off(); s.lutMix = 0

@@ -27,18 +27,54 @@ public struct LightLeakSettings: Codable, Hashable, Sendable {
     public init() {}
 }
 
+/// Artistic black-and-white negative processing, displayed as a scanned positive.
+/// Values describe relative processing, not calibrated chemical times or temperatures.
+public struct FilmProcessSettings: Codable, Hashable, Sendable {
+    public var enabled = false
+    public var exposureEV: Float = 0
+    public var development: Float = 1
+    public var agitation: Float = 1
+    public var stop: Float = 1
+    public var fixation: Float = 1
+    public var wash: Float = 1
+    public var drying: Float = 1
+    public var seed: UInt32 = 137
+    public init() {}
+}
+
 public struct EffectSettings: Codable, Hashable, Sendable {
     public var lutMix: Float = 1
     /// Scene exposure before a scene-to-display LUT (PoLUT); ignored for display looks.
     public var lutExposureEV: Float = 0
+    public var laboratory: FilmLabSession?
+    public var laboratoryDisplay: Int = 0
+    public var process = FilmProcessSettings()
     public var grain = GrainSettings()
     public var leak = LightLeakSettings()
     public init() {}
+    private enum CodingKeys: String, CodingKey { case lutMix, lutExposureEV, grain, leak, process, laboratory, laboratoryDisplay }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        lutMix = try c.decodeIfPresent(Float.self,forKey: .lutMix) ?? 1
+        lutExposureEV = try c.decodeIfPresent(Float.self,forKey: .lutExposureEV) ?? 0
+        grain = try c.decodeIfPresent(GrainSettings.self,forKey: .grain) ?? GrainSettings()
+        leak = try c.decodeIfPresent(LightLeakSettings.self,forKey: .leak) ?? LightLeakSettings()
+        laboratoryDisplay = try c.decodeIfPresent(Int.self,forKey: .laboratoryDisplay) ?? 0
+        laboratory = try c.decodeIfPresent(FilmLabSession.self,forKey: .laboratory)
+        process = try c.decodeIfPresent(FilmProcessSettings.self,forKey: .process) ?? FilmProcessSettings()
+    }
     public var validated: Self {
         func limit(_ value: Float,_ low: Float,_ high: Float,_ fallback: Float) -> Float {
             value.isFinite ? min(high,max(low,value)) : fallback
         }
         var s = self
+        s.process.exposureEV = limit(s.process.exposureEV,-4,4,0)
+        s.process.development = limit(s.process.development,0.25,2,1)
+        s.process.agitation = limit(s.process.agitation,0,1,1)
+        s.process.stop = limit(s.process.stop,0,1,1)
+        s.process.fixation = limit(s.process.fixation,0,1,1)
+        s.process.wash = limit(s.process.wash,0,1,1)
+        s.process.drying = limit(s.process.drying,0,1,1)
         s.lutMix = limit(s.lutMix,0,1,1)
         s.lutExposureEV = limit(s.lutExposureEV,-3,3,0)
         s.grain.amount = limit(s.grain.amount,0,1,0)

@@ -40,6 +40,9 @@ struct AnaLineAboutView: View {
                 .font(.system(size: 11, weight: .regular, design: .monospaced))
                 .tracking(1)
                 .foregroundStyle(.secondary)
+            Link("Tape DSP: CHOW Tape Model · Jatin Chowdhury · GPLv3",
+                 destination: URL(string: "https://github.com/jatinchowdhury18/AnalogTapeModel")!)
+                .font(.caption2)
         }
         .padding(40)
         .frame(width: 440)

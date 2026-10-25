@@ -29,9 +29,22 @@ enum BuildStamp {
         guard let summary else { return warning }
         return "\(summary) · \(warning)"
     }
+
+    /// Header form. The header holds the wordmark, the mode switch and the
+    /// Choose button on one row, so the stamp shows the identifier and the
+    /// minute and leaves the full `notice` to the tooltip and the About panel.
+    /// Nil when there is no bundle around the executable, which is also when
+    /// `notice` collapses to the warning on its own.
+    static var compact: String? {
+        guard let identifier else { return nil }
+        guard let time else { return "Build \(identifier)" }
+        // "2026-10-14 10:22:36 +0800" -> "2026-10-14 10:22"
+        let stamp = time.split(separator: " ").prefix(2).joined(separator: " ")
+        return "Build \(identifier) · \(stamp)"
+    }
 }
 
-/// Which build is running, under the workspace header's status line. The
+/// Which build is running, beside the workspace header's status line. The
 /// triangle borrows the hazard yellow so the warning reads as part of the tape
 /// rather than as an error.
 struct EarlyBuildStamp: View {
@@ -40,7 +53,7 @@ struct EarlyBuildStamp: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(HazardPalette.yellow)
-            Text(BuildStamp.notice)
+            Text(BuildStamp.compact ?? BuildStamp.notice)
                 .font(.caption2)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
@@ -50,5 +63,6 @@ struct EarlyBuildStamp: View {
                 .help(BuildStamp.notice)
         }
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(BuildStamp.notice)
     }
 }

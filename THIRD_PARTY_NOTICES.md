@@ -26,3 +26,7 @@ Film-Luts 上游声明 MIT，同时明确否认拥有全部 LUT；hald-clut 汇�
 `Assets/bliss.jpg` 和 `Assets/rickroll.mp4` 为本地测试素材，不在本项目的授权范围，默认通过 `.gitignore` 排除。打包脚本会在本地存在 Bliss 图片时复制它，因此公开发布 App 前须换成有分发授权的图片，或从 App 资源中移除它。
 
 论文、标准和调研项目仅列作参考，其内容与许可未被本项目的 AGPLv3 文件替代。完整链接与用途见[参考项目列表](Docs/References.md)。
+
+## CHOW Tape Model DSP
+
+`Sources/CTapeDSP/TapeDSP.cpp` 改编自 Jatin Chowdhury 的 [CHOW Tape Model](https://github.com/jatinchowdhury18/AnalogTapeModel)，采用 **GPLv3**。准确版本、源文件和修改记录见 [NOTICE](ThirdParty/CHOWTape/NOTICE.md)，[上游 GPLv3 全文](ThirdParty/CHOWTape/LICENSE) 随源码和 macOS App 打包。GPLv3/AGPLv3 第 13 条允许此组合；CHOW 衍生部分保留 GPLv3，原创部分保留 AGPLv3。未包含 JUCE、RTNeural、xsimd 或上游 GUI。分发二进制时应提供对应源码和构建脚本，不能仅提供署名。

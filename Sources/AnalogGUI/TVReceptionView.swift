@@ -4,15 +4,31 @@ import CoreGraphics
 
 /// Fixed 100 ms time buckets, newest at the top. Missing measurements remain
 /// black; pause replaces the current row instead of inventing elapsed time.
-@MainActor
-final class TVSpectrumHistory: ObservableObject {
+///
+/// The DSP producer renders into this and returns without notifying; the
+/// MainActor UI timer calls `publish()` at its own pace. That keeps the audio
+/// path free of MainActor hops while SwiftUI still re-reads exactly 20 times a
+/// second instead of once per audio block. All mutable state is behind one lock:
+/// the producer is the only writer, the UI is the only reader.
+final class TVSpectrumHistory: ObservableObject, @unchecked Sendable {
     static let width = 512, height = 100
-    private var pixels = [UInt8](repeating: 0, count: width * height * 4)
-    private(set) var image: CGImage?
-    private(set) var spectrum: TVSpectrum?
-    private(set) var trace = [Float]()
-    private(set) var latestTime: Double?
+    let width: Int, height: Int
+    private let lock = NSLock()
+    private var pixels: [UInt8]
+    private var _image: CGImage?
+    private var _spectrum: TVSpectrum?
+    private var _trace = [Float]()
+    private var _latestTime: Double?
     private var bucket: Int?
+    var image: CGImage? { lock.lock(); defer { lock.unlock() }; return _image }
+    var spectrum: TVSpectrum? { lock.lock(); defer { lock.unlock() }; return _spectrum }
+    var trace: [Float] { lock.lock(); defer { lock.unlock() }; return _trace }
+    var latestTime: Double? { lock.lock(); defer { lock.unlock() }; return _latestTime }
+    init(width: Int = TVSpectrumHistory.width, height: Int = TVSpectrumHistory.height) {
+        precondition(width > 0 && height > 0)
+        self.width = width; self.height = height
+        pixels = [UInt8](repeating: 0, count: width*height*4)
+    }
     private static let palette: [[UInt8]] = (0...255).map { index in
         let stops: [(Float, SIMD3<Float>)] = [
             (0, SIMD3(2,4,10)), (0.25, SIMD3(15,36,94)),
@@ -22,49 +38,83 @@ final class TVSpectrumHistory: ObservableObject {
         let rgb = a.1 + (b.1-a.1)*((x-a.0)/(b.0-a.0))
         return [UInt8(rgb.x), UInt8(rgb.y), UInt8(rgb.z), 255]
     }
-    func reset() {
-        objectWillChange.send()
-        pixels = .init(repeating: 0, count: Self.width * Self.height * 4)
-        image = nil; spectrum = nil; trace = []; latestTime = nil; bucket = nil
+    func reset() { clearState(); objectWillChange.send() }
+    private func clearState() {
+        lock.lock(); defer { lock.unlock() }
+        pixels = .init(repeating: 0, count: width*height*4)
+        _image = nil; _spectrum = nil; _trace = []; _latestTime = nil; bucket = nil
     }
-    func update(_ measurement: TVSpectrum?, time: Double) {
+    /// UI-side: tell SwiftUI to re-read whatever the producer last rendered.
+    func publish() { objectWillChange.send() }
+    /// Producer-side: render one row. Does not notify — the UI timer decides
+    /// when the frame is shown, so a slow GUI skips frames instead of queueing.
+    func render(_ measurement: TVSpectrum?, time: Double) {
         guard let measurement, !measurement.powerDB.isEmpty else { return }
-        if let previous = spectrum,
+        lock.lock(); defer { lock.unlock() }
+        if let previous = _spectrum,
            previous.sampleRate != measurement.sampleRate || previous.centerHz != measurement.centerHz {
-            reset()
+            clearLocked()
         }
         let current = Int(floor(time*10 + 1e-7))
-        if let previous = bucket, current < previous || current-previous >= Self.height {
-            reset()
+        if let previous = bucket, current < previous || current-previous >= height {
+            clearLocked()
         }
-        objectWillChange.send()
-        let shift = min(Self.height, max(0, current-(bucket ?? current)))
-        let stride = Self.width*4
+        let shift = min(height, max(0, current-(bucket ?? current)))
+        let bytesPerRow = width*4
         if shift > 0 {
-            // Copy backwards to move history down without overlapping writes.
-            let amount = shift*stride
+            // Move history down in one overlapping copy, then blank the new rows.
+            let amount = min(pixels.count, shift*bytesPerRow)
             if amount < pixels.count {
-                for n in (amount..<pixels.count).reversed() { pixels[n] = pixels[n-amount] }
+                pixels.withUnsafeMutableBytes { raw in
+                    guard let base = raw.baseAddress else { return }
+                    memmove(base.advanced(by: amount), base, raw.count-amount)
+                }
             }
             for n in 0..<amount { pixels[n] = 0 }
         }
-        trace = (0..<Self.width).map { x in
-            let lo = x*measurement.powerDB.count/Self.width
-            let hi = max(lo+1, (x+1)*measurement.powerDB.count/Self.width)
+        let rows = (0..<width).map { x in
+            let lo = x*measurement.powerDB.count/width
+            let hi = max(lo+1, (x+1)*measurement.powerDB.count/width)
             return measurement.powerDB[lo..<min(hi,measurement.powerDB.count)].max() ?? -120
         }
-        for x in trace.indices {
-            let color = Self.palette[Int(min(255, max(0, (trace[x]+100)*2.55)))]
+        for x in rows.indices {
+            let color = Self.palette[Int(min(255, max(0, (rows[x]+100)*2.55)))]
             for c in 0..<4 { pixels[x*4+c] = color[c] }
         }
         let data = Data(pixels) as CFData
         if let provider = CGDataProvider(data: data) {
-            image = CGImage(width: Self.width, height: Self.height, bitsPerComponent: 8,
-                bitsPerPixel: 32, bytesPerRow: stride, space: CGColorSpaceCreateDeviceRGB(),
+            _image = CGImage(width: width, height: height, bitsPerComponent: 8,
+                bitsPerPixel: 32, bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                 provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
         }
-        spectrum = measurement; latestTime = time; bucket = current
+        _trace = rows; _spectrum = measurement; _latestTime = time; bucket = current
+    }
+    private func clearLocked() {
+        pixels = .init(repeating: 0, count: width*height*4)
+        _image = nil; _spectrum = nil; _trace = []; _latestTime = nil; bucket = nil
+    }
+    /// Television path: render and notify in one call.
+    func update(_ measurement: TVSpectrum?, time: Double) {
+        render(measurement, time: time)
+        objectWillChange.send()
+    }
+    /// Column range showing `lowerHz...upperHz`, as fractions of the full width.
+    func columnRange(lowerHz: Double, upperHz: Double) -> ClosedRange<Double> {
+        lock.lock(); let current = _spectrum; lock.unlock()
+        guard let current, current.sampleRate > 0 else { return 0...1 }
+        let left = (lowerHz-(current.centerHz-current.sampleRate/2))/current.sampleRate
+        let right = (upperHz-(current.centerHz-current.sampleRate/2))/current.sampleRate
+        return max(0,min(1,left))...max(0,min(1,right))
+    }
+    func croppedImage(lowerHz: Double, upperHz: Double) -> CGImage? {
+        lock.lock(); let current = _image; lock.unlock()
+        guard let current else { return nil }
+        let range = columnRange(lowerHz: lowerHz, upperHz: upperHz)
+        let left = (range.lowerBound*Double(width)).rounded(.down)
+        let right = max(left+1, (range.upperBound*Double(width)).rounded(.up))
+        guard right-left < Double(width) else { return current }
+        return current.cropping(to: CGRect(x: left, y: 0, width: min(Double(width)-left, right-left), height: Double(height))) ?? current
     }
 }
 
@@ -103,7 +153,7 @@ struct TVReceptionView: View {
     }
 }
 
-private enum TVInstrumentPalette {
+enum TVInstrumentPalette {
     static let screen = Color(red: 0.016,green: 0.028,blue: 0.03)
     static let ink = Color(red: 0.79,green: 0.88,blue: 0.84)
     static let muted = Color(red: 0.46,green: 0.57,blue: 0.54)
@@ -301,7 +351,7 @@ private struct TVSpectrumPlot: View {
 
 /// A cached RGB subpixel mask is tiled by the compositor. No per-measurement
 /// bitmap filtering or animation is needed; multiply keeps empty rows black.
-private struct TVLCDSurface: View {
+struct TVLCDSurface: View {
     @Environment(\.displayScale) private var displayScale
     var body: some View {
         Rectangle().fill(ImagePaint(image: Image(decorative: Self.mask,scale: 8).interpolation(.none)))
