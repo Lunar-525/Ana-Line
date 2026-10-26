@@ -25,5 +25,6 @@
 <key>public.filename-extension</key><array><string>analine</string></array>
 </dict>
 </dict></array>
+<key>NSCameraUsageDescription</key><string>将摄像头画面作为 CRT 玻璃的实时反射。画面仅在本机内存中处理，不录像、不上传，也不采集麦克风。</string>
 <key>NSMicrophoneUsageDescription</key><string>将你的麦克风声音实时混入 SSTV 接收信号，创造图像失真。声音仅在本机内存中处理。</string>
 </dict></plist>

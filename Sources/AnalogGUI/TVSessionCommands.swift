@@ -23,5 +23,12 @@ struct TVSessionCommands: Commands {
             Button(L("Save Session As…")) { model?.saveSession(asNew: true) }
                 .keyboardShortcut("s",modifiers: [.command,.shift]).disabled(model?.tool != .tv || model?.busy == true)
         }
+        CommandGroup(after: .windowList) {
+            Button(L("Clean Feed")) {
+                if let model { TVCleanFeedWindowController.shared.show(model: model) }
+            }
+            .keyboardShortcut("l", modifiers: [.command, .shift])
+            .disabled(model?.tool != .tv)
+        }
     }
 }

@@ -55,6 +55,7 @@ final class PreviewModel: ObservableObject {
     } }
     @Published var tvStandard: TVStandard = .pal { didSet {
         if oldValue != tvStandard {
+            tvPreviewState.crtHistoryID &+= 1
             if tvControlState.tvStandard != tvStandard { tvControlState.tvStandard = tvStandard }
             tvChannel.rfBandwidthMHz = TerrestrialSystem(video: tvStandard).channelMHz
             selectTVStandard()
@@ -412,6 +413,7 @@ final class PreviewModel: ObservableObject {
         tvHasAudio = video != nil ? await tvRenderer.hasAudioTrack() : false
         let limit = max(0,duration-tvStandard.frameDuration)
         tvTime = floor(min(limit,document.position)*tvStandard.frameRate+1e-7)/tvStandard.frameRate
+        tvPreviewState.crtHistoryID &+= 1
         tvOriginal = nil; processed = nil
         tvPreviewState.droppedFrames = 0; tvPreviewState.playbackRate = 1
         imageDescription = video?.lastPathComponent ?? ""
@@ -450,6 +452,7 @@ final class PreviewModel: ObservableObject {
         tvVisionSpectrum.reset(); tvSoundSpectrum.reset(); tvLightningState.reset()
         tvTXInstrumentState.reading = nil
         tvSynchronization = TelevisionSynchronization()
+        tvPreviewState.crtHistoryID &+= 1
         tvPreparing = true; tvPreparationProgress = nil; tvPreparationStage = .video
         defer { tvPreparing = false; tvPreparationProgress = nil }
         return try await tvRenderer.loadVideo(url,standard: standard ?? tvStandard,cache: tvPreferences.configuration) { [weak self] progress in
@@ -496,7 +499,7 @@ final class PreviewModel: ObservableObject {
         guard tool == .tv, tvDuration > 0, !busy, !tvPlaying else { return }
         renderTask?.cancel(); renderTask = nil; renderRun += 1
         let lastTime = max(0, tvDuration - tvStandard.frameDuration)
-        if tvTime >= lastTime { tvTime = 0; tvLightningState.reset() }
+        if tvTime >= lastTime { tvTime = 0; tvLightningState.reset(); tvPreviewState.crtHistoryID &+= 1 }
         let startTime = tvTime, standard = tvStandard
         tvPlaybackRun += 1
         let run = tvPlaybackRun
@@ -635,6 +638,7 @@ final class PreviewModel: ObservableObject {
 
     func seekTV(to time: Double) {
         guard tool == .tv, tvDuration > 0, !busy else { return }
+        tvPreviewState.crtHistoryID &+= 1
         tvVisionSpectrum.reset(); tvSoundSpectrum.reset(); tvLightningState.reset()
         let resume = tvPlaying
         pauseTVPlayback()
@@ -727,6 +731,7 @@ final class PreviewModel: ObservableObject {
                     status = L("Preparing video with FFmpeg…")
                     let duration = try await prepareTVVideo(url)
                     tvSourceURL = url
+                    tvPreviewState.crtHistoryID &+= 1
                     tvOriginal = nil; processed = nil
                     tvPreviewState.droppedFrames = 0; tvPreviewState.playbackRate = 1
                     tvDuration = duration
@@ -862,8 +867,13 @@ struct ComparisonView: View {
     var crtHDR = true
     var crtBrightness = 2.0
     var crtScanlines = 0.0
-    var crtMaskPitch = 9.0
+    var crtLines = 240.0
     var crtMaskStrength = 0.8
+    var crtMaxLines = 576.0
+    var crtMaskType = TVCRTMaskType.apertureGrille.rawValue
+    var crtHistoryID: UInt64 = 0
+    var onCRTBrightness: ((TVCRTBrightnessReading) -> Void)? = nil
+    var onCRTDrawableSize: ((CGSize) -> Void)? = nil
     var pasteImage: () -> Void = {}
     var pasteEnabled = true
     @State private var split: CGFloat = 0.5
@@ -885,7 +895,7 @@ struct ComparisonView: View {
             let w = before.size.width*scale, h = before.size.height*scale
             ZStack(alignment: .topLeading) {
                 if crtEnabled, TVCRTDisplay.isAvailable {
-                    TVCRTDisplay(image: after, hdr: crtHDR, brightness: crtBrightness, maskPitch: crtMaskPitch, maskStrength: crtMaskStrength, scanlines: crtScanlines)
+                    TVCRTDisplay(image: after, hdr: crtHDR, brightness: crtBrightness, crtLines: crtLines, maskStrength: crtMaskStrength, scanlines: crtScanlines, maxLines: crtMaxLines, maskType: crtMaskType, historyID: crtHistoryID, onBrightness: onCRTBrightness, onDrawableSize: onCRTDrawableSize)
                         .frame(width: w, height: h).allowsHitTesting(false)
                 } else {
                     Image(nsImage: after).resizable().frame(width: w,height: h)
@@ -926,11 +936,11 @@ struct ComparisonView: View {
 
 struct ContentView: View {
     @ObservedObject var languageStore: LanguageStore
-    @StateObject private var model: PreviewModel
+    @ObservedObject private var model: PreviewModel
     @State private var dropIsTargeted = false
     init(languageStore: LanguageStore, model: PreviewModel = PreviewModel()) {
         self.languageStore = languageStore
-        _model = StateObject(wrappedValue: model)
+        self.model = model
     }
     var parameters: [(String,String)] {
         if model.tool == .tv {
@@ -1079,8 +1089,9 @@ struct ContentView: View {
 struct AnaLineApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var languageStore = LanguageStore()
+    @StateObject private var model = PreviewModel()
     var body: some Scene {
-        WindowGroup(L("AnaLine")) { ContentView(languageStore: languageStore) }.defaultSize(width: 1200,height: 900)
+        WindowGroup(L("AnaLine")) { ContentView(languageStore: languageStore, model: model) }.defaultSize(width: 1200,height: 900)
             .windowStyle(.hiddenTitleBar)
             .commands { AnaLineAboutCommands(); TVSessionCommands() }
         Window(L("About Ana-Line"), id: "about") {

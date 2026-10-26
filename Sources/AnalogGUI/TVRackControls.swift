@@ -111,7 +111,7 @@ struct TVNativeKnob: NSViewRepresentable {
         override func accessibilityPerformDecrement() -> Bool { setPosition(position-increment); return isEnabled }
         override func draw(_ dirtyRect: NSRect) {
             let centre = NSPoint(x: bounds.midX,y: bounds.midY), radius = min(bounds.width,bounds.height)/2
-            let t = min(1,max(0,(position-lower)/(upper-lower)))
+            let t = min(1,max(0,(position-lower)/max(Double.ulpOfOne, upper-lower)))
             NSGraphicsContext.saveGraphicsState()
             if !isEnabled { NSGraphicsContext.current?.cgContext.setAlpha(0.35) }
             for n in 0...10 {

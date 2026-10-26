@@ -425,7 +425,116 @@
 
 "Automatic scanlines" = "自动扫描线";
 "Scanline count" = "扫描线数量";
-"Automatic scanlines follow the source height. Manual range: 120–1080." = "自动模式跟随源画面高度，手动可设为 120–1080 条。";
+"Automatic scanlines follow the simulated CRT lines. Manual range is limited by the current broadcast standard." = "自动扫描线跟随模拟 CRT 行数；手动范围受当前广播标准限制。";
 
-"Phosphor pitch" = "荧光粉间距";
+"CRT lines" = "CRT 行数";
 "Phosphor mask" = "荧光粉栅格";
+"Phosphor arrangement" = "荧光点排列";
+"Aperture grille" = "荫栅（Trinitron）";
+"Shadow mask (dot triad)" = "荫罩（三角点）";
+"Slot mask" = "槽孔荫罩";
+"Inline shadow mask" = "一字点荫罩";
+"Vertical stripes with damping wires." = "垂直荧光条，带水平阻尼线。";
+"Round dots in triangular triads." = "圆形荧光点，按三角形三元组排列。";
+"Staggered vertical slots." = "交错排列的垂直槽孔。";
+"Vertical dots in a straight row." = "垂直排列的独立荧光点。";
+"Each simulated pixel is rendered as an RGB phosphor triplet." = "每个模拟像素会被渲染为一组 RGB 荧光点；源画面先重采样到该点阵。";
+"Phosphor gaps reduce average brightness; HDR peak compensates." = "荧光点之间的暗缝会降低平均亮度，可用 HDR 峰值补偿。";
+
+"Clean Feed" = "纯净画面";
+"Clean feed" = "纯净画面";
+"Open a clean feed in a separate window" = "在独立窗口中打开纯净画面。";
+"CRT %d / %d lines: non-integer ratio may cause moiré. Try %@." = "CRT %d / %d 行：非整数倍，可能出现摩尔纹；建议 %@。";
+
+"Low" = "低";
+
+"Medium" = "中";
+
+"High" = "高";
+
+"CRT moiré risk: %@." = "CRT 摩尔纹风险：%@。";
+
+"Sampling estimate; image content is not analysed." = "基于采样条件估算，未分析画面内容。";
+
+"Phosphor mask is dense or unevenly sampled." = "荧光遮罩过密或采样间距不均。";
+
+"Scanlines are dense or unevenly sampled." = "扫描线过密或采样间距不均。";
+
+"Enlarge the preview or reduce scanline count." = "请放大预览或减少扫描线数量。";
+
+"Enlarge the preview." = "请放大预览。";
+
+"Reduce scanline count or enlarge the preview." = "请减少扫描线数量或放大预览。";
+
+"Try CRT lines %@ or enlarge the preview." = "建议 CRT 行数 %@，或放大预览。";
+
+"Try CRT lines %@, reduce scanline count, or enlarge the preview." = "建议 CRT 行数 %@、减少扫描线数量或放大预览。";
+
+"Automatic XDR brightness" = "自动 XDR 亮度";
+
+"Requested %.1f× · Output ceiling %.1f× · Available %.1f× · Potential %.1f×" = "请求 %.1f× · 输出上限 %.1f× · 可用 %.1f× · 潜在 %.1f×";
+
+"Brightness readings appear while the CRT preview is rendering." = "CRT 预览渲染后显示亮度读数。";
+
+"Round RGB dots on a close-packed triangular lattice." = "圆形 RGB 荧光点，按三角晶格交错密排。";
+
+"Hexagonal phosphors (experimental)" = "六边形荧光单元（实验）";
+
+"Horizontal RGB stripes (experimental)" = "横向 RGB 条纹（实验）";
+
+"Beam-index vertical stripes" = "束索引竖条屏";
+
+"Hexagonal RGB cells; experimental patent geometry." = "六边形 RGB 单元，基于专利方案的实验结构。";
+
+"Horizontal RGB bands; experimental beam-index geometry." = "横向 RGB 条带，实验性束索引结构。";
+
+"RGB stripes without damping wires; index layer is not visible." = "无阻尼线的 RGB 竖条，背部索引层不可见。";
+
+"Beam and phosphor response" = "电子束与荧光响应";
+
+"Beam spot" = "电子束光斑";
+
+"Corner convergence" = "边角会聚误差";
+
+"Phosphor decay" = "荧光衰减时间";
+
+"Bright beams widen; focus and RGB alignment soften toward the corners." = "亮部光斑更宽，边角聚焦略软并出现轻微 RGB 会聚误差。";
+
+"Decay uses elapsed time, with slightly different RGB tails. Set any control to 0 to bypass that effect." = "余辉按真实时间衰减，RGB 尾迹略有差异；任一参数设为 0 可关闭对应效果。";
+
+"Glass scattering and reflection" = "玻璃散射与反射";
+
+"Glass scatter" = "玻璃散射";
+
+"Highlight halo" = "高光光晕";
+
+"Halo radius" = "光晕半径";
+
+"Camera reflection" = "相机反射强度";
+
+"Live camera glass reflection" = "实时摄像头玻璃反射";
+
+"Camera reflection is mirrored, softened and strongest in dark areas. Local only; no recording or audio capture." = "镜像倒影经过柔化，在暗部更明显。仅本机处理，不录像、不采集声音。";
+
+"Camera reflection is off." = "摄像头反射已关闭。";
+
+"Requesting camera access…" = "正在请求摄像头权限…";
+
+"Camera reflection is live; processed only on this Mac." = "摄像头反射已开启，画面仅在本机处理。";
+
+"Camera access denied. Enable it in System Settings → Privacy & Security → Camera." = "摄像头权限被拒绝，可在系统设置 → 隐私与安全性 → 摄像头中开启。";
+
+"Camera unavailable or interrupted. Switch reflection off and on to retry." = "摄像头不可用或采集中断，请关闭反射开关再打开以重试。";
+
+"Run the packaged AnaLine app to enable camera reflection." = "请运行打包后的 AnaLine.app 以启用摄像头反射。";
+
+"Curvature" = "球面畸变";
+"0% removes barrel distortion; 50% matches the previous fixed curvature." = "0% 关闭球面畸变；50% 等于原来的固定曲率。";
+
+"Pixel-perfect stripes" = "条纹点对点";
+"Stripe masks use integer subpixel scaling with black borders. Triangular masks keep free scaling; curvature, glass and manual scanlines are bypassed." = "条纹遮罩使用整数子像素缩放并保留黑边；三角排列仍可自由缩放，曲率、玻璃和手动扫描线在此模式下旁路。";
+"Pixel-perfect stripes are limited to %d lines at this preview." = "当前预览下，条纹点对点最多 %d 行。";
+
+"Best full-frame: %dL · %dpx stripes." = "最佳全幅：%dL · 每条纹 %dpx。";
+"Use" = "使用";
+"Use %d CRT lines" = "使用 %d 行";

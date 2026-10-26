@@ -25,15 +25,30 @@ struct TVSignalPanel<Content: View>: View {
 
 struct TVControls: View {
     @ObservedObject var model: TVControlState
-    init(model: PreviewModel) { model.tvControlState.bind(model); self.model = model.tvControlState }
-    init(state: TVControlState) { self.model = state }
+    let previewState: TVPreviewState
+    init(model: PreviewModel) { model.tvControlState.bind(model); self.model = model.tvControlState; previewState = model.tvPreviewState }
+    init(state: TVControlState) { self.model = state; previewState = TVPreviewState() }
     var body: some View {
         HStack(spacing: 10) {
-            TVCRTControls()
+            TVCRTControls(state: previewState, maxLines: Double(model.tvStandard.height))
             TVBroadcastStandardSwitch(selection: $model.tvStandard)
             TVSimulationProfileSwitch(selection: Binding(
                 get: { model.tvChannel.performance == .mobile },
                 set: { model.tvChannel.performance = $0 ? .mobile : .full }))
+            Button {
+                if let owner = model.owner { TVCleanFeedWindowController.shared.show(model: owner) }
+            } label: {
+                Text(L("Clean Feed"))
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1).minimumScaleFactor(0.7)
+                    .frame(maxWidth: .infinity).frame(height: 48)
+                    .background(Rectangle().fill(.white)
+                        .shadow(color: .black.opacity(0.35), radius: 5, y: 2))
+            }
+            .buttonStyle(ToolModeButtonStyle())
+            .help(L("Open a clean feed in a separate window"))
+            .disabled(model.tvDuration <= 0 || model.owner == nil)
+            .opacity(model.tvDuration > 0 && model.owner != nil ? 1 : 0.4)
             Button { model.owner?.exportTVVideo() } label: {
                 Text(L("Render and Export…"))
                     .font(.system(size: 13, weight: .medium))
@@ -195,8 +210,9 @@ private struct TVBroadcastStandardSwitch: View {
 
 struct TVTunerControls: View {
     @ObservedObject var model: TVControlState
-    init(model: PreviewModel) { model.tvControlState.bind(model); self.model = model.tvControlState }
-    init(state: TVControlState) { self.model = state }
+    let previewState: TVPreviewState
+    init(model: PreviewModel) { model.tvControlState.bind(model); self.model = model.tvControlState; previewState = model.tvPreviewState }
+    init(state: TVControlState) { self.model = state; previewState = TVPreviewState() }
     private var defaults: TerrestrialSettings { TerrestrialSettings(system: model.terrestrialSystem) }
     var body: some View {
         GroupBox(L("Tuner / receiver")) {

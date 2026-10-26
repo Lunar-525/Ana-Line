@@ -8,20 +8,23 @@ struct TVPlayerView: View {
     private var controlsVisible: Bool { hovering || scrubbing }
 
     var body: some View {
-        PreviewCanvasView(model: model)
-            .frame(width: 640, height: 480)
-            .overlay(alignment: .bottom) {
-                // Keep the bar mounted so Space still works when the pointer is outside.
-                TVPlaybackBar(model: model, controlsVisible: controlsVisible) { scrubbing = $0 }
-                    .padding(12)
-                    .opacity(controlsVisible ? 1 : 0)
-                    .allowsHitTesting(controlsVisible)
-                    .accessibilityHidden(!controlsVisible)
-                    .animation(.easeOut(duration: 0.12), value: controlsVisible)
-            }
-            .contentShape(Rectangle())
-            .onHover { hovering = $0 }
-            .clipped()
+        VStack(spacing: 0) {
+            PreviewCanvasView(model: model)
+        }
+        .frame(width: 640, height: 480)
+        .overlay(alignment: .top) { TVMoireWarningView(model: model) }
+        .overlay(alignment: .bottom) {
+            // Keep the bar mounted so Space still works when the pointer is outside.
+            TVPlaybackBar(model: model, controlsVisible: controlsVisible) { scrubbing = $0 }
+                .padding(12)
+                .opacity(controlsVisible ? 1 : 0)
+                .allowsHitTesting(controlsVisible)
+                .accessibilityHidden(!controlsVisible)
+                .animation(.easeOut(duration: 0.12), value: controlsVisible)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .clipped()
     }
 }
 
