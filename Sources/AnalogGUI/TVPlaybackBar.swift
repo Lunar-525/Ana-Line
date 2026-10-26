@@ -1,30 +1,87 @@
 import SwiftUI
+import AppKit
 
 struct TVPlayerView: View {
-    let model: PreviewModel
+    @ObservedObject var model: PreviewModel
+    @StateObject private var osd: TVOSDState
+    @AppStorage("tvCRTEnabled") private var crtEnabled = false
     @State private var hovering = false
     @State private var scrubbing = false
+
+    init(model: PreviewModel) {
+        self.model = model
+        _osd = StateObject(wrappedValue: TVOSDState(maxLines: Double(model.tvStandard.height)))
+    }
 
     private var controlsVisible: Bool { hovering || scrubbing }
 
     var body: some View {
-        VStack(spacing: 0) {
-            PreviewCanvasView(model: model)
+        HStack(alignment: .top, spacing: 0) {
+            monitor
+            TVPVMControlPanel(state: osd)
         }
-        .frame(width: 640, height: 480)
-        .overlay(alignment: .top) { TVMoireWarningView(model: model) }
-        .overlay(alignment: .bottom) {
-            // Keep the bar mounted so Space still works when the pointer is outside.
-            TVPlaybackBar(model: model, controlsVisible: controlsVisible) { scrubbing = $0 }
-                .padding(12)
-                .opacity(controlsVisible ? 1 : 0)
-                .allowsHitTesting(controlsVisible)
-                .accessibilityHidden(!controlsVisible)
-                .animation(.easeOut(duration: 0.12), value: controlsVisible)
-        }
+        .frame(height: 480)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .clipped()
+        .background { keyboardShortcuts }
+        .onAppear { syncOSD() }
+        .onChange(of: model.tvStandard.height) { _ in syncOSD() }
+        .onChange(of: crtEnabled) { enabled in
+            if !enabled { osd.forcePowerOff() }
+        }
+    }
+
+    /// MENU/BACK = ←, selection = ↑/↓, ENTER = Return or →.
+    @ViewBuilder private var keyboardShortcuts: some View {
+        Button("") { osd.menu() }
+            .keyboardShortcut(.leftArrow, modifiers: [])
+            .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+        if osd.isOpen {
+            Button("") { osd.up() }
+                .keyboardShortcut(.upArrow, modifiers: [])
+                .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+            Button("") { osd.down() }
+                .keyboardShortcut(.downArrow, modifiers: [])
+                .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+            Button("") { osd.enter() }
+                .keyboardShortcut(.return, modifiers: [])
+                .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+            Button("") { osd.enter() }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+        }
+    }
+
+    private var monitor: some View {
+        ZStack {
+            PreviewCanvasView(model: model, osdOverlay: osdOverlayImage)
+        }
+        .frame(width: 640, height: 480)
+        .overlay(alignment: .top) {
+            if !osd.isOpen { TVMoireWarningView(model: model) }
+        }
+        .overlay(alignment: .bottom) {
+            if !osd.isOpen {
+                // Keep the bar mounted so Space still works when the pointer is outside.
+                TVPlaybackBar(model: model, controlsVisible: controlsVisible) { scrubbing = $0 }
+                    .padding(12)
+                    .opacity(controlsVisible ? 1 : 0)
+                    .allowsHitTesting(controlsVisible)
+                    .accessibilityHidden(!controlsVisible)
+                    .animation(.easeOut(duration: 0.12), value: controlsVisible)
+            }
+        }
+    }
+
+    private var osdOverlayImage: NSImage? {
+        guard osd.isOpen else { return nil }
+        return TVCRTOSDImage.make(state: osd)
+    }
+
+    private func syncOSD() {
+        osd.maxLines = Double(model.tvStandard.height)
+        osd.reload()
     }
 }
 

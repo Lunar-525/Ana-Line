@@ -44,6 +44,11 @@ final class PreviewModel: ObservableObject {
     @Published private(set) var tvPreparationProgress: Double?
     @Published private(set) var tvPreparationStage = TVPreparationProgress.Stage.video
     @Published private(set) var tvPreparing = false
+    @Published var cableSettings: TVCableSettings = TVCableSettings.load() { didSet {
+        cableSettings.save()
+        tvPlaybackBuffer?.cable = cableSettings
+        if tool == .tv && tvDuration > 0 && !tvPlaying { updateSelection(immediate: true) }
+    } }
     @Published var tvChannel: TerrestrialSettings = {
         var settings = TerrestrialSettings(system: .palDK)
         settings.propagation.enabled = true
@@ -120,7 +125,8 @@ final class PreviewModel: ObservableObject {
             do {
                 _ = try await exporter.loadVideo(source, standard: standard,
                     cache: tvPreferences.configuration)
-                let result = try await exporter.exportVideo(to: output, channel: channel) { progress in
+                let result = try await exporter.exportVideo(to: output, channel: channel,
+                    cable: cableSettings) { progress in
                     Task { @MainActor [weak self] in
                         guard let self, self.tvExporting else { return }
                         self.tvExportProgress = progress.fraction
@@ -268,7 +274,8 @@ final class PreviewModel: ObservableObject {
                 do {
                     // Coalesce rapid slider changes before starting the CPU-heavy CVBS pass.
                     if !immediate { try await Task.sleep(for: .milliseconds(90)) }
-                    let result = try await tvRenderer.render(time: time, channel: channel)
+                    let result = try await tvRenderer.render(time: time, channel: channel,
+                        cable: cableSettings)
                     guard run == renderRun, !Task.isCancelled else { return }
                     presentTVPreview(result)
                 } catch {
@@ -518,7 +525,8 @@ final class PreviewModel: ObservableObject {
                 try tvAudio.prepare(capacity: (capacity+4)*Int(ceil(48_000*standard.frameDuration)))
                 let firstFrame = Int64((startTime*standard.frameRate).rounded())
                 let startSample = TVSoundClock.offset(frame: firstFrame,standard: standard)
-                let buffer = TVPlaybackBuffer(settings: tvChannel,capacity: capacity,firstFrame: firstFrame,frameRate: standard.frameRate)
+                let buffer = TVPlaybackBuffer(settings: tvChannel, cable: cableSettings,
+                    capacity: capacity, firstFrame: firstFrame, frameRate: standard.frameRate)
                 tvPlaybackBuffer = buffer
                 let pcmQueue = tvAudio.pcmQueue, renderer = tvRenderer, hook = tvPlaybackRenderHook
                 // The hot producer loop must never await the main actor merely to
@@ -539,7 +547,8 @@ final class PreviewModel: ObservableObject {
                             }
                             let productionStart = ContinuousClock.now
                             try await hook?(Int64((time*standard.frameRate).rounded()))
-                            let result = try await renderer.render(time: time,channel: buffer.settings,settleAfterSeek: !outputStarted)
+                            let result = try await renderer.render(time: time, channel: buffer.settings,
+                                settleAfterSeek: !outputStarted, cable: buffer.cable)
                             try Task.checkCancellation()
                             let pcm = result.reception.audio.isEmpty
                                 ? [Float](repeating: 0,count: TVSoundClock.count(frame: result.frameIndex,standard: standard))
@@ -871,6 +880,7 @@ struct ComparisonView: View {
     var crtMaskStrength = 0.8
     var crtMaxLines = 576.0
     var crtMaskType = TVCRTMaskType.apertureGrille.rawValue
+    var osdOverlay: NSImage? = nil
     var crtHistoryID: UInt64 = 0
     var onCRTBrightness: ((TVCRTBrightnessReading) -> Void)? = nil
     var onCRTDrawableSize: ((CGSize) -> Void)? = nil
@@ -895,7 +905,7 @@ struct ComparisonView: View {
             let w = before.size.width*scale, h = before.size.height*scale
             ZStack(alignment: .topLeading) {
                 if crtEnabled, TVCRTDisplay.isAvailable {
-                    TVCRTDisplay(image: after, hdr: crtHDR, brightness: crtBrightness, crtLines: crtLines, maskStrength: crtMaskStrength, scanlines: crtScanlines, maxLines: crtMaxLines, maskType: crtMaskType, historyID: crtHistoryID, onBrightness: onCRTBrightness, onDrawableSize: onCRTDrawableSize)
+                    TVCRTDisplay(image: after, hdr: crtHDR, brightness: crtBrightness, crtLines: crtLines, maskStrength: crtMaskStrength, scanlines: crtScanlines, maxLines: crtMaxLines, maskType: crtMaskType, osd: osdOverlay, historyID: crtHistoryID, onBrightness: onCRTBrightness, onDrawableSize: onCRTDrawableSize)
                         .frame(width: w, height: h).allowsHitTesting(false)
                 } else {
                     Image(nsImage: after).resizable().frame(width: w,height: h)
@@ -1003,8 +1013,12 @@ struct ContentView: View {
                             }.frame(minWidth: 300,maxWidth: .infinity).frame(height: 480)
                         }.frame(maxWidth: .infinity,alignment: .leading)
                         HStack(alignment: .top,spacing: 16) {
-                            TVTransmitterControls(model: model).frame(width: 420)
+                            TVTransmitterControls(model: model)
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
                             TVReceiverControls(model: model)
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+                            TVCableColumn(model: model)
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
                         }
                     }.padding(.bottom,8).padding(.horizontal,6)
                 }.padding(.horizontal,-6)

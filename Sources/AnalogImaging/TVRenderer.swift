@@ -241,14 +241,17 @@ public actor TVRenderer {
         pipeline = nil; prepared = nil
     }
 
-    public func render(time: Double, channel settings: TerrestrialSettings? = nil,settleAfterSeek: Bool = true) throws -> Preview {
+    public func render(time: Double, channel settings: TerrestrialSettings? = nil,
+                       settleAfterSeek: Bool = true, cable: TVCableSettings = .off) throws -> Preview {
         try Task.checkCancellation()
-        let result = try frameQueue.sync { try renderFrame(time: time,channel: settings,settleAfterSeek: settleAfterSeek) }
+        let result = try frameQueue.sync { try renderFrame(time: time,channel: settings,
+            settleAfterSeek: settleAfterSeek, cable: cable) }
         try Task.checkCancellation()
         return result
     }
 
-    private func renderFrame(time: Double,channel settings: TerrestrialSettings?,settleAfterSeek: Bool) throws -> Preview {
+    private func renderFrame(time: Double, channel settings: TerrestrialSettings?,
+                             settleAfterSeek: Bool, cable: TVCableSettings) throws -> Preview {
         let started = ContinuousClock.now
         try Task.checkCancellation()
         let settings = settings ?? TerrestrialSettings(system: TerrestrialSystem(video: standard))
@@ -322,7 +325,14 @@ public actor TVRenderer {
         simulationFrame = frameIndex
         try Task.checkCancellation()
         let decodedAt = ContinuousClock.now
-        let image = try Self.image(decoded.frame)
+        let image: CGImage
+        if cable.kind == .off {
+            image = try Self.image(decoded.frame)
+        } else {
+            let cableRGB = TVCableProcessor.apply(decoded.frame.rgb, width: standard.width,
+                height: standard.height, settings: cable, frameIndex: frameIndex)
+            image = try Self.image(try TVFrame(standard: standard, rgb: cableRGB))
+        }
         let finished = ContinuousClock.now
         // Hand the next playback frame over now, so its construction, transmit and
         // front end run during the gap before the next call and that call is left
@@ -533,6 +543,7 @@ extension TVRenderer {
     /// Offline, continuous simulation with recovered audio. MOV stores PNG video
     /// and float PCM, avoiding an additional lossy codec after simulation.
     public func exportVideo(to destination: URL, channel: TerrestrialSettings,
+                            cable: TVCableSettings = .off,
                             progress: @escaping @Sendable (TVExportProgress) -> Void) async throws -> TVExportProgress {
         guard let ffmpeg, normalizedURL != nil else { throw TVVideoError.noVideo }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AnaLine-export-" + UUID().uuidString)
@@ -557,8 +568,11 @@ extension TVRenderer {
         var lastUpdate = start
         for index in 0..<frameCount {
             try Task.checkCancellation()
-            let preview = try render(time: Double(index)/standard.frameRate, channel: channel, settleAfterSeek: false)
-            let pixels = preview.reception.frame.rgb
+            let preview = try render(time: Double(index)/standard.frameRate, channel: channel,
+                settleAfterSeek: false, cable: cable)
+            let pixels = cable.kind == .off ? preview.reception.frame.rgb
+                : TVCableProcessor.apply(preview.reception.frame.rgb, width: standard.width,
+                    height: standard.height, settings: cable, frameIndex: preview.frameIndex)
             let bytes = pixels.withUnsafeBufferPointer { source in
                 [UInt8](unsafeUninitializedCapacity: source.count*3) { target, initialized in
                     for n in source.indices {

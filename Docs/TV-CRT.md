@@ -115,6 +115,46 @@ L_best   = floor(cap / k)                // 标准内最大的全幅行数
 
 Retina 屏幕上表要使用 drawable 物理像素，而不是窗口 point 尺寸。CRT 面板会显示当前预览的最佳全幅值，并提供「使用」按钮。
 
+## 接收机到 CRT 的线缆阶段
+
+接收机解码之后、CRT 之前新增 `TVCableStage`。它只处理处理后信号，因此预览、Clean Feed 和导出视频都包含线缆效果；OSD 仍然是显示端叠加，不经过线缆。
+
+可选类型：
+
+- **AV**：RCA / CVBS，单线
+- **BNC**：BNC / CVBS，单线，专业 75Ω
+- **Component (Y/Pb/Pr)**：三线，分别控制 Y、Pb、Pr
+- **S-Video**：Y/C 两线
+- **Off**：直通
+
+线缆级参数：线缆阻抗 50–100Ω、线缆健康度。每根线独立：连接/拔出、接头阻抗、接头健康度、松紧度。阻抗失配会产生重影，健康度和松紧下降会增加衰减与噪声。
+
+干扰源可在面板中添加：220V 电源线（hum 横条）和微波炉（高频噪声/横向干扰），各自有强度与距离。任一根 Component/S-Video 线拔出都有明确结果：Y 拔出黑屏；Pb/Pr 或 C 拔出后失去对应色度。
+
+线缆不是一个弹出面板，而是下方三个并列区域之一：`01 · Encoding / transmitter`、`03 · Receiver / reconstruction`、`CABLE / SIGNAL PATH` 各占 1/3。Cable 列的外层高度限制在约 370 点，与 01/03 机架列对齐；内容超出时在列内滚动。三个机架模块：
+
+- **A · Cable Cabinet**：柜内一排选择 AV / BNC / Component (Y/Pb/Pr) / S-Video / Off，并显示 RECEIVER/CRT 接口与线缆走向；
+- **B · Cable Condition**：线缆阻抗/健康度，以及每根线的接头阻抗/健康度/松紧度和拔插状态。参数用纵向推子（Z/H/T）排列，Component 的 Y/Pb/Pr 三张卡横向并排，避免把列拉长；
+- **C · Interference**：220V 市电线、微波炉、压缩机、变压器、地电位差；每个源有开关、强度和距离，可添加/删除。多个干扰源用横向卡片排列，强度和距离使用旋钮而不是水平滑条。
+
+Phase 1 为电气/线缆健康模型；Composite 的彩色副载波、dot crawl、cross-color 等更细的调制/解调留到 Phase 2。
+
+## 竖向面板与 OSD
+
+视频窗口右侧增加了一条竖向专业监视器风格控制面板：`CRT / MULTI FORMAT` 面板、绿色/红色电源 LED、`POWER`、`MENU`、`UP`、`DOWN`、`ENTER` 按键和底部扬声器格栅。按键使用深灰金属、内阴影和高光边缘，工作在视频的 480 点高度内。
+
+`MENU` 在画面内打开 OSD，而不是弹出窗口。OSD 只在菜单状态变化时用 `ImageRenderer` 光栅化一次，上传为独立 Metal 纹理；`crtFragment` 在源采样阶段把它混入 `I` 和无法分辨荧光点时的平均色 fallback，再经过荧光点阵、扫描线和曲面，所以它本身也有 CRT 质感，但不需要每帧做 `NSImage` 合成。OSD 不使用投影阴影；标题只保留 `SETUP`，不再显示 ON LED（仅保留 `ON/STANDBY` 文本）；字体使用 VCR OSD Mono（系统未安装时回退等宽字体），菜单项字号进一步增大。选中行使用 TV 黄色强调色的反色相蓝紫（约 `#778DEA`）。Clean Feed 不显示 OSD；POWER OFF 时 MENU 不可用，OSD 会关闭。可控制：
+
+- `CRT DISPLAY`、`HDR PHOSPHOR`、`AUTO XDR`、`PIXEL PERFECT` 开关；
+- `CRT LINES`、`SCANLINES`、`PHOSPHOR MASK`、`CURVATURE` 数值；
+- `MASK TYPE` 子菜单，列出全部荧光点排列，并在每项左侧显示对应的小型荧光点排列实例图。
+
+OSD 主菜单每页 6 项，遮罩子菜单每页 5 项；选择移到下一行时会自动滚动到下一页，页脚显示 `PAGE n/m`。
+
+导航：`UP/DOWN` 选择，`ENTER` 切换或进入编辑；数值行再用 `UP/DOWN` 调整、`ENTER` 确认；`MENU` 返回上一层，再按一次关闭。也可以直接用面板按键。键盘绑定：`←` = MENU/BACK，`↑` = UP，`↓` = DOWN，`Return` 或 `→` = ENTER；`←` 在菜单关闭时也会打开 OSD，但 POWER OFF 时不会打开。设置写入原有 `tvCRT*` 键，和右侧详细 CRT 弹出面板实时同步；打开菜单时会重新读取外部修改。
+
+面板的 `POWER` 直接切换 CRT 显示；`MENU` 在 OSD 打开时兼作返回键。详细玻璃/反射和光束参数仍在原 CRT 弹出面板中。
+
 ## 摩尔纹警告
 
 电视预览使用 Metal drawable 的实际物理像素尺寸评估摩尔纹风险，随预览尺寸和屏幕 backing scale 更新。提示为覆盖层，不改变预览尺寸；低风险为白色信息条，中/高风险为黄色警告。Clean Feed 不显示提示。
@@ -154,6 +194,8 @@ Retina 屏幕上表要使用 drawable 物理像素，而不是窗口 point 尺�
 - 峰值线性缩放，HDR 白色超过 1、SDR 白色不超过 1、黑位为零；
 - 高行数下点小于显示像素时回退为中性平均色；
 - 三角/六角在相同尺寸和行数下比竖条更晚进入高风险；
+- 竖向面板/OSD 的电源、开关、行数编辑、遮罩子菜单、返回层级和分页；
+- 线缆阶段的 AV/BNC/Component/SVideo 路由、拔出、阻抗/健康度、干扰源与持久化；
 - 曲率 0/50/100% 的系数钳制，以及关闭曲率只移除局部拉伸采样；
 - 条纹点对点的行数上限、整数倍率、黑边和超限压行；
 - 最佳全幅行数公式，包括 2936×2202 / PAL 下的 367L；

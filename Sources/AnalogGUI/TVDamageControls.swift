@@ -15,8 +15,8 @@ struct TVTransmitterControls: View {
             TVEncoderRack(state: state)
             TVFilterRack(state: state)
             TVPowerAmplifierRack(state: state,instruments: instruments)
-        }.frame(minWidth: 340,maxWidth: 420).environment(\.colorScheme,.dark)
-            .disabled(state.busy).frame(maxWidth: .infinity,alignment: .leading)
+        }.frame(maxWidth: .infinity, alignment: .leading).environment(\.colorScheme,.dark)
+            .disabled(state.busy)
     }
 }
 struct TVReceiverControls: View {
@@ -40,7 +40,7 @@ struct TVReceiverControls: View {
             TVTunerAGCRack(state: state)
             TVSyncYCRack(state: state)
             TVReceptionView(model: model)
-        }.frame(minWidth: 340,maxWidth: .infinity).environment(\.colorScheme,.dark)
+        }.frame(maxWidth: .infinity, alignment: .leading).environment(\.colorScheme,.dark)
             .disabled(state.busy)
     }
 }

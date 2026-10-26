@@ -72,15 +72,22 @@ final class TVPlaybackBuffer: @unchecked Sendable {
     private var presentedFrame: Int64?
     private var timings = TVPlaybackMetrics()
     private var channel: TerrestrialSettings
+    private var cableSetting: TVCableSettings
     private let frameRate: Double
     let capacity: Int
-    init(settings: TerrestrialSettings,capacity: Int = 8,firstFrame: Int64 = 0,frameRate: Double = 25) {
-        channel = settings; self.capacity = max(1,capacity); self.frameRate = frameRate
+    init(settings: TerrestrialSettings, cable: TVCableSettings = .off,
+         capacity: Int = 8, firstFrame: Int64 = 0, frameRate: Double = 25) {
+        channel = settings; cableSetting = cable
+        self.capacity = max(1,capacity); self.frameRate = frameRate
         timings = TVPlaybackMetrics(firstFrame: firstFrame)
     }
     var settings: TerrestrialSettings {
         get { lock.withLock { channel } }
         set { lock.withLock { channel = newValue } }
+    }
+    var cable: TVCableSettings {
+        get { lock.withLock { cableSetting } }
+        set { lock.withLock { cableSetting = newValue } }
     }
     var metrics: TVPlaybackMetrics { lock.withLock { timings } }
     var lastPreview: TVRenderer.Preview? { lock.withLock { latest } }

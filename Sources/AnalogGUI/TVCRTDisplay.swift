@@ -31,6 +31,7 @@ struct TVCRTDisplay: NSViewRepresentable {
     var scanlines: Double = 0
     var maxLines: Double = 576
     var maskType: Int = TVCRTMaskType.apertureGrille.rawValue
+    var osd: NSImage? = nil
 
     var historyID: UInt64 = 0
     var onBrightness: ((TVCRTBrightnessReading) -> Void)? = nil
@@ -57,7 +58,7 @@ struct TVCRTDisplay: NSViewRepresentable {
             scanlines: scanlines, crtLines: crtLines, maskStrength: maskStrength,
             maxLines: maxLines, maskType: maskType,
             curvature: Self.curvatureCoefficient(curvature),
-            pixelPerfectStripes: pixelPerfectStripes,
+            pixelPerfectStripes: pixelPerfectStripes, osd: osd,
             beam: TVCRTBeamSettings(spot: beamSpot, decayMS: phosphorDecayMS, convergence: convergence),
             historyID: historyID,
             glass: TVCRTGlassSettings(scatter: glassScatter, halo: glassHalo, radius: glassRadius,
@@ -171,6 +172,8 @@ struct TVCRTDisplay: NSViewRepresentable {
         private var maskType = TVCRTMaskType.apertureGrille.rawValue
         private var curvature = 0.018
         private var pixelPerfectStripes = true
+        private var osdTexture: MTLTexture?
+        private var previousOSD: NSImage?
         private(set) var error: Error?
 
         override init() {
@@ -191,7 +194,7 @@ struct TVCRTDisplay: NSViewRepresentable {
         var available: Bool { pipeline != nil }
         func update(image: NSImage, hdr: Bool, brightness: Double, automaticBrightness: Bool, scanlines: Double,
                     crtLines: Double, maskStrength: Double, maxLines: Double, maskType: Int,
-                    curvature: Double = 0.018, pixelPerfectStripes: Bool = true,
+                    curvature: Double = 0.018, pixelPerfectStripes: Bool = true, osd: NSImage? = nil,
                     beam: TVCRTBeamSettings = TVCRTBeamSettings(), historyID: UInt64 = 0,
                     glass: TVCRTGlassSettings = TVCRTGlassSettings(), cameraEnabled: Bool = false) {
             self.glassSettings = glass; self.cameraEnabled = cameraEnabled
@@ -214,6 +217,10 @@ struct TVCRTDisplay: NSViewRepresentable {
             self.crtLines = crtLines; self.maskStrength = maskStrength
             self.maxLines = maxLines; self.maskType = maskType; self.curvature = curvature
             self.pixelPerfectStripes = pixelPerfectStripes
+            if osd !== previousOSD {
+                previousOSD = osd
+                loadOSD(osd)
+            }
             guard previous !== image, let device,
                   let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
             // Normalize embedded source profiles into sRGB before GPU sRGB decoding.
@@ -233,6 +240,31 @@ struct TVCRTDisplay: NSViewRepresentable {
                 previous = image
             } catch { self.error = error }
         }
+        private func loadOSD(_ image: NSImage?) {
+            guard let image, let device,
+                  let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                osdTexture = nil
+                return
+            }
+            let space = CGColorSpace(name: CGColorSpace.sRGB)!
+            guard let bitmap = CGContext(data: nil, width: cg.width, height: cg.height,
+                bitsPerComponent: 8, bytesPerRow: cg.width * 4, space: space,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+                osdTexture = nil
+                return
+            }
+            bitmap.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+            guard let normalized = bitmap.makeImage() else { osdTexture = nil; return }
+            do {
+                osdTexture = try MTKTextureLoader(device: device).newTexture(cgImage: normalized,
+                    options: [.SRGB: true, .origin: MTKTextureLoader.Origin.topLeft,
+                              .generateMipmaps: true])
+            } catch {
+                osdTexture = nil
+                self.error = error
+            }
+        }
+
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
             reportSize(size)
         }
@@ -305,13 +337,15 @@ struct TVCRTDisplay: NSViewRepresentable {
                 Float(maskStyle.meanFill), Float(maskStyle.stagger))
             var beamUniform = beam.spatialUniform
             let activeCurvature = pointToPoint == nil ? curvature : 0
-            var optics = SIMD4<Float>(Float(activeCurvature), pointToPoint == nil ? 0 : 1, 0, 0)
+            var optics = SIMD4<Float>(Float(activeCurvature), pointToPoint == nil ? 0 : 1,
+                osdTexture == nil ? 0 : 1, 0)
             let layout = pointToPoint?.rect ?? CGRect(x: 0, y: 0, width: 1, height: 1)
             var layoutUniform = SIMD4<Float>(Float(layout.minX), Float(layout.minY),
                 Float(layout.width), Float(layout.height))
             encoder.setFragmentBytes(&beamUniform, length: 16, index: 3)
             encoder.setFragmentBytes(&optics, length: 16, index: 4)
             encoder.setFragmentBytes(&layoutUniform, length: 16, index: 5)
+            encoder.setFragmentTexture(osdTexture, index: 1)
             encoder.setFragmentBytes(&phosphor, length: MemoryLayout<SIMD4<Float>>.stride, index: 1)
             encoder.setFragmentBytes(&style, length: MemoryLayout<SIMD4<Float>>.stride, index: 2)
             encoder.setRenderPipelineState(pipeline)
@@ -445,6 +479,7 @@ struct TVCRTDisplay: NSViewRepresentable {
         }
 
         fragment float4 crtFragment(Vertex v [[stage_in]], texture2d<float> image [[texture(0)]],
+            texture2d<float> osd [[texture(1)]],
             constant float4 &u [[buffer(0)]], constant float4 &m [[buffer(1)]],
             constant float4 &cfg [[buffer(2)]], constant float4 &beam [[buffer(3)]],
             constant float4 &optics [[buffer(4)]], constant float4 &layout [[buffer(5)]]) {
@@ -544,6 +579,13 @@ struct TVCRTDisplay: NSViewRepresentable {
             }
 
             float3 I = beamSample(image, s, pixelCenter, pixelUV, lod, beam);
+            if (optics.z > 0.5) {
+                // The OSD was rendered with premultiplied alpha. Blending it
+                // into the source here puts it through the same phosphor mask,
+                // scanlines and curvature without per-frame CPU compositing.
+                float4 overlay = osd.sample(s, uv, level(lod));
+                I = overlay.rgb + I * (1.0 - overlay.a);
+            }
             float value = phosphorChannel(I, primary);
             // Same-primary halo from the four neighbouring simulated pixels.
             float3 g0 = image.sample(s, pixelCenter + float2( pixelUV.x, 0.0), level(lod)).rgb;
@@ -573,6 +615,12 @@ struct TVCRTDisplay: NSViewRepresentable {
             float resolved = smoothstep(0.6, 1.6, dotPx);
             float3 average = beam.x > 0 || beam.y > 0 ? beamSample(image, s, uv, float2(0), 0, beam)
                 : image.sample(s, uv, level(0.0)).rgb;
+            if (optics.z > 0.5) {
+                // The unresolved-dot fallback must see the OSD too; otherwise
+                // the overlay disappears as soon as the phosphor mask averages.
+                float4 overlay = osd.sample(s, uv, level(lod));
+                average = overlay.rgb + average * (1.0 - overlay.a);
+            }
             float3 fallback = average * cfg.z * u.z;
             float3 emission = phosphorPrimary(primary, value * aperture * u.z);
             float3 color = mix(fallback, emission, resolved);

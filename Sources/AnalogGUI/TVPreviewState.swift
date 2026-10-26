@@ -64,7 +64,12 @@ struct PreviewCanvasView: View {
     @AppStorage("tvCRTScanlines") private var crtScanlines = 480.0
     @ObservedObject var model: PreviewModel
     @ObservedObject var tvState: TVPreviewState
-    init(model: PreviewModel) { self.model = model; tvState = model.tvPreviewState }
+    let osdOverlay: NSImage?
+    init(model: PreviewModel, osdOverlay: NSImage? = nil) {
+        self.model = model
+        self.osdOverlay = osdOverlay
+        tvState = model.tvPreviewState
+    }
     var body: some View {
         ZStack {
             if model.tool != .tv { Color.black.opacity(0.3) }
@@ -78,6 +83,7 @@ struct PreviewCanvasView: View {
                     crtLines: crtLines, crtMaskStrength: crtMaskStrength,
                     crtMaxLines: Double(model.tvStandard.height),
                     crtMaskType: crtMaskType,
+                    osdOverlay: osdOverlay,
                     crtHistoryID: tvState.crtHistoryID,
                     onCRTBrightness: { tvState.crtBrightness = $0 },
                     onCRTDrawableSize: { tvState.crtDrawableSize = $0 },
@@ -93,4 +99,5 @@ struct PreviewCanvasView: View {
             }
         }
     }
+
 }
